@@ -424,8 +424,10 @@ class BitgetClient:
                 price=price,
                 params=params
             )
-            filled = float(order.get("filled", amount))
-            avg_p = float(order.get("average", price or 0.0))
+            filled_val = order.get("filled")
+            filled = float(filled_val) if filled_val is not None else float(amount)
+            avg_val = order.get("average")
+            avg_p = float(avg_val) if avg_val is not None else float(price or 0.0)
             fee = float(order.get("fee", {}).get("cost", 0.0) if order.get("fee") else (filled * avg_p * settings.SPOT_TAKER_FEE))
 
             return OrderExecutionResult(
@@ -483,8 +485,10 @@ class BitgetClient:
                 price=price,
                 params={"marginMode": "cross"}
             )
-            filled = float(order.get("filled", amount))
-            avg_p = float(order.get("average", price or 0.0))
+            filled_val = order.get("filled")
+            filled = float(filled_val) if filled_val is not None else float(amount)
+            avg_val = order.get("average")
+            avg_p = float(avg_val) if avg_val is not None else float(price or 0.0)
             fee = float(order.get("fee", {}).get("cost", 0.0) if order.get("fee") else (filled * avg_p * settings.PERP_TAKER_FEE))
 
             return OrderExecutionResult(
