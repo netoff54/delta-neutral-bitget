@@ -74,17 +74,18 @@ async def test_otc_balance_and_transfer():
     print("\n=== TEST 5: Automatic OTC / P2P Balance Detection & Transfer ===")
     client = BitgetClient()
     
-    # 1. Pastikan saldo OTC terdeteksi
-    otc_bal = await client.fetch_otc_balance()
-    assert otc_bal == 50.0, f"Expected 50.0, got {otc_bal}"
-    print(f"✅ Saldo OTC / P2P terdeteksi: ${otc_bal:.2f} USDT")
+    with patch.object(settings, "DRY_RUN", True):
+        # 1. Pastikan saldo OTC terdeteksi
+        otc_bal = await client.fetch_otc_balance()
+        assert otc_bal == 50.0, f"Expected 50.0, got {otc_bal}"
+        print(f"✅ Saldo OTC / P2P terdeteksi: ${otc_bal:.2f} USDT")
 
-    # 2. Total saldo cair mencakup Spot + Futures + OTC
-    liquid_info = await client.fetch_liquid_trading_balance()
-    expected_total = 100.0 + 50.0  # SIMULATED_BALANCE_USDT (100) + SIMULATED_OTC_BALANCE_USDT (50)
-    assert liquid_info["total_liquid_usdt"] == expected_total, f"Expected {expected_total}, got {liquid_info['total_liquid_usdt']}"
-    assert liquid_info["otc_free"] == 50.0
-    print(f"✅ Total Saldo Cair Gabungan: ${liquid_info['total_liquid_usdt']:.2f} USDT (Spot: ${liquid_info['spot_free']:.2f}, Swap: ${liquid_info['swap_free']:.2f}, OTC: ${liquid_info['otc_free']:.2f})")
+        # 2. Total saldo cair mencakup Spot + Futures + OTC
+        liquid_info = await client.fetch_liquid_trading_balance()
+        expected_total = 100.0 + 50.0  # SIMULATED_BALANCE_USDT (100) + SIMULATED_OTC_BALANCE_USDT (50)
+        assert liquid_info["total_liquid_usdt"] == expected_total, f"Expected {expected_total}, got {liquid_info['total_liquid_usdt']}"
+        assert liquid_info["otc_free"] == 50.0
+        print(f"✅ Total Saldo Cair Gabungan: ${liquid_info['total_liquid_usdt']:.2f} USDT (Spot: ${liquid_info['spot_free']:.2f}, Swap: ${liquid_info['swap_free']:.2f}, OTC: ${liquid_info['otc_free']:.2f})")
 
     # 3. Test Transfer dari OTC ke Spot/Futures saat dibutuhkan
     # Mocking transfer call

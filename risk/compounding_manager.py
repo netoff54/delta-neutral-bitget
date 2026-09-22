@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -130,7 +131,8 @@ class CompoundingManager:
             per_pos = usable / max(1, settings.MAX_CONCURRENT_POSITIONS)
             if settings.MAX_CAPITAL_PER_POSITION_USDT:
                 per_pos = min(per_pos, settings.MAX_CAPITAL_PER_POSITION_USDT)
-            return round(max(5.0, per_pos), 2)
+            floor_val = math.floor(per_pos * 100.0) / 100.0
+            return max(5.0, floor_val)
 
         # Fallback ke modal ter-compound lokal jika balance live tidak dilewatkan
         return round(self.current_capital, 2)
@@ -142,7 +144,8 @@ class CompoundingManager:
         """
         max_liquid_usable = available_liquid_usdt * (1.0 - settings.LIQUID_SAFETY_BUFFER_PERCENT)
 
-        if requested_amount > max_liquid_usable:
+        # Toleransi 0.02 USDT untuk mencegah false warning akibat precision floating-point
+        if requested_amount > (max_liquid_usable + 0.02):
             log.warning(
                 f"[Bitget Earn Protection] Alokasi modal (${requested_amount:.2f}) melebihi saldo trading cair yang aman "
                 f"(${max_liquid_usable:.2f}). Alokasi dibatalkan untuk melindungi saldo Bitget Earn Anda!"
