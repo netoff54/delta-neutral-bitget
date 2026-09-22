@@ -1,0 +1,91 @@
+import asyncio
+from datetime import datetime
+from typing import Dict, Any
+
+from config.settings import settings
+from utils.logger import log
+from utils.notifier import notifier
+from core.bitget_client import BitgetClient, bitget_client
+from execution.position_manager import PositionManager, position_manager
+from execution.order_executor import OrderExecutor, order_executor
+from risk.yield_vault import yield_vault
+from risk.compounding_manager import compounding_manager
+
+class FundingGuard:
+    """
+    Penjaga Funding Rate:
+    1. Memantau apakah funding rate pada posisi aktif berubah menjadi negatif.
+    2. Menghitung dan mencatat akumulasi pembayaran funding fee yang diterima.
+    3. Memicu auto-exit jika funding rate merugikan trader.
+    """
+
+    def __init__(
+        self,
+        client: BitgetClient = bitget_client,
+        pos_mgr: PositionManager = position_manager,
+        executor: OrderExecutor = order_executor
+    ):
+        self.client = client
+        self.pos_mgr = pos_mgr
+        self.executor = executor
+        self.last_funding_times: Dict[str, datetime] = {}
+
+    async def check_positions_funding(self):
+        """Pemeriksaan siklus funding untuk seluruh posisi aktif."""
+        active_positions = self.pos_mgr.get_active_positions()
+        if not active_positions:
+            return
+
+        funding_rates_dict = await self.client.fetch_all_funding_rates()
+
+        for pos in active_positions:
+            fr_data = funding_rates_dict.get(pos.perp_leg.symbol)
+            if not fr_data:
+                continue
+
+            current_rate = float(fr_data.get("fundingRate", 0.0))
+            log.info(f"[FundingGuard] {pos.base_asset}: Funding Rate saat ini: {current_rate * 100:.4f}%/8h")
+
+            # 1. Deteksi Pembalikan Funding Rate (Negative Funding)
+            if current_rate <= settings.EMERGENCY_EXIT_FUNDING_RATE:
+                log.warning(
+                    f"⚠️ [EMERGENCY EXIT] Funding rate untuk {pos.base_asset} menjadi negatif "
+                    f"({current_rate * 100:.4f}% <= {settings.EMERGENCY_EXIT_FUNDING_RATE * 100:.4f}%). "
+                    f"Memicu penutupan posisi darurat!"
+                )
+                await self.executor.close_delta_neutral_position(
+                    position_id=pos.position_id,
+                    reason=f"Funding Rate Negatif ({current_rate * 100:.4f}%)"
+                )
+                continue
+
+            # 2. Akumulasi Funding Fee
+            # Jika siklus funding telah lewat, estimasikan penerimaan fee
+            now = datetime.utcnow()
+            last_checked = self.last_funding_times.get(pos.position_id, pos.entry_time)
+            hours_passed = (now - last_checked).total_seconds() / 3600.0
+
+            # Siklus dinamis (menyesuaikan koin 4h, 8h, 1h)
+            interval = float(getattr(pos, "funding_interval_hours", 8) or 8)
+            if hours_passed >= interval:
+                cycle_count = int(hours_passed // interval)
+                harvested = pos.perp_leg.nominal_usdt * current_rate * cycle_count
+                pos.cumulative_funding_received += harvested
+                pos.funding_payments_count += cycle_count
+                self.last_funding_times[pos.position_id] = now
+                self.pos_mgr.update_position(pos)
+
+                # Putar kembali profit ke modal trading delta-neutral (Compounding)
+                compounding_manager.add_harvest_profit(
+                    position_id=pos.position_id,
+                    base_asset=pos.base_asset,
+                    profit_usdt=harvested,
+                    funding_rate=current_rate
+                )
+
+                log.info(
+                    f"💰 [Harvest] Posisi {pos.base_asset} menerima funding fee: "
+                    f"+${harvested:.4f} USDT (Total Terkumpul: ${pos.cumulative_funding_received:.4f})"
+                )
+
+funding_guard = FundingGuard()

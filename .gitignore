@@ -1,0 +1,26 @@
+# Environment variables & API credentials
+.env
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# Logs & temporary files
+*.log
+bot.log
+tests/test_compounding_state.json
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
