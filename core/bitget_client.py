@@ -408,7 +408,14 @@ class BitgetClient:
             )
 
         try:
-            params = {"createMarketBuyOrderRequiresPrice": False}
+            params = {}
+            if order_type == "market" and side == "buy" and (price is None or price <= 0):
+                try:
+                    ticker = await self.client.fetch_ticker(symbol)
+                    price = float(ticker.get("ask") or ticker.get("last") or 0.0)
+                except Exception as te:
+                    log.warning(f"Gagal mengambil live ticker untuk market buy {symbol}: {te}")
+
             order = await self.client.create_order(
                 symbol=symbol,
                 type=order_type,

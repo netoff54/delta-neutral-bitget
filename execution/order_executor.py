@@ -123,12 +123,18 @@ class OrderExecutor:
 
         actual_qty = spot_res.filled_amount
 
-        # 3. Eksekusi Kaki 2: Short Perp (sesuai persis dengan jumlah spot yang terisi)
-        log.info(f"-> Eksekusi Kaki 2: Short Perp {opportunity.perp_symbol} {actual_qty}...")
+        # 3. Eksekusi Kaki 2: Short Perp (sesuai persis dengan jumlah spot yang terisi dan presisi kontrak)
+        perp_qty = actual_qty
+        try:
+            perp_qty = float(self.client.client.amount_to_precision(opportunity.perp_symbol, actual_qty))
+        except Exception:
+            pass
+
+        log.info(f"-> Eksekusi Kaki 2: Short Perp {opportunity.perp_symbol} {perp_qty}...")
         perp_res = await self.client.execute_perp_order(
             symbol=opportunity.perp_symbol,
             side="sell",
-            amount=actual_qty,
+            amount=perp_qty,
             order_type="market",
             price=opportunity.perp_price
         )
