@@ -375,10 +375,14 @@ class BitgetClient:
         return round(aligned_qty, 6)
 
     async def set_leverage_for_symbol(self, perp_symbol: str, leverage: int = settings.LEVERAGE):
-        """Mengatur leverage untuk posisi futures."""
+        """Mengatur leverage untuk posisi futures dan memastikan position mode satu arah (one_way_mode)."""
         if settings.DRY_RUN:
             return
         try:
+            try:
+                await self.client.set_position_mode(False, perp_symbol)
+            except Exception as pe:
+                log.debug(f"Position mode sync notice: {pe}")
             await self.client.set_leverage(leverage, perp_symbol, params={"marginMode": "cross"})
         except Exception as e:
             log.warning(f"Gagal mengatur leverage {leverage}x untuk {perp_symbol}: {e}")
@@ -458,7 +462,8 @@ class BitgetClient:
         side: str,
         amount: float,
         order_type: str = "market",
-        price: Optional[float] = None
+        price: Optional[float] = None,
+        reduce_only: bool = False
     ) -> OrderExecutionResult:
         """Eksekusi order di pasar USDT-M Futures (Perpetual)."""
         if settings.DRY_RUN:
@@ -477,13 +482,17 @@ class BitgetClient:
             )
 
         try:
+            params = {"marginMode": "cross"}
+            if reduce_only:
+                params["reduceOnly"] = True
+
             order = await self.client.create_order(
                 symbol=symbol,
                 type=order_type,
                 side=side,
                 amount=amount,
                 price=price,
-                params={"marginMode": "cross"}
+                params=params
             )
             filled_val = order.get("filled")
             filled = float(filled_val) if filled_val is not None else float(amount)

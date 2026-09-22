@@ -233,15 +233,25 @@ class OrderExecutor:
             symbol=pos.perp_leg.symbol,
             side="buy",
             amount=pos.perp_leg.amount,
-            order_type="market"
+            order_type="market",
+            reduce_only=True
         )
 
         # 2. Jual Spot Token
-        log.info(f"-> Menjual Spot {pos.spot_leg.symbol} sejumlah {pos.spot_leg.amount}...")
+        actual_spot_qty = pos.spot_leg.amount
+        try:
+            spot_bal = await self.client.client.fetch_balance({"type": "spot"})
+            free_coin = float(spot_bal.get("free", {}).get(pos.base_asset, 0.0) or 0.0)
+            if 0.0 < free_coin < actual_spot_qty:
+                actual_spot_qty = free_coin
+        except Exception:
+            pass
+
+        log.info(f"-> Menjual Spot {pos.spot_leg.symbol} sejumlah {actual_spot_qty}...")
         spot_close_res = await self.client.execute_spot_order(
             symbol=pos.spot_leg.symbol,
             side="sell",
-            amount=pos.spot_leg.amount,
+            amount=actual_spot_qty,
             order_type="market"
         )
 
