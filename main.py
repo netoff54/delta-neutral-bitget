@@ -241,13 +241,14 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
 
     try:
         while True:
-            if sys.stdout.isatty() and not os.getenv("RAILWAY_ENVIRONMENT") and not os.getenv("RENDER"):
-                console.clear()
-            print_banner(settings.DRY_RUN)
-            console.print(f"[dim]Waktu Pemeriksaan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
+            try:
+                if sys.stdout.isatty() and not os.getenv("RAILWAY_ENVIRONMENT") and not os.getenv("RENDER"):
+                    console.clear()
+                print_banner(settings.DRY_RUN)
+                console.print(f"[dim]Waktu Pemeriksaan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
 
-            # 0. Ambil saldo akun dan tampilkan Portfolio Pool & Proteksi Earn
-            bal = await bitget_client.fetch_balance()
+                # 0. Ambil saldo akun dan tampilkan Portfolio Pool & Proteksi Earn
+                bal = await bitget_client.fetch_balance()
             total_bal = float(bal.get("total", {}).get("USDT", 0.0) or bal.get("USDT", {}).get("total", 0.0) or (settings.TOTAL_MAX_CAPITAL_USDT or 0.0))
             spot_free = float(bal.get("spot_free", 0.0))
             swap_free = float(bal.get("swap_free", 0.0))
@@ -333,8 +334,12 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
                         f"Modal sedang bekerja memanen funding fee.[/yellow]"
                     )
 
-            # Bersihkan memori RAM agar hemat biaya container di cloud (Railway)
-            gc.collect()
+                # Bersihkan memori RAM agar hemat biaya container di cloud
+                gc.collect()
+
+            except Exception as cycle_err:
+                log.error(f"⚠️ [Loop Resiliency] Terjadi kendala siklus: {cycle_err}", exc_info=True)
+                await asyncio.sleep(5)
 
             console.print(f"\n[dim]Menunggu {settings.SCAN_INTERVAL_SECONDS} detik untuk pemindaian pasar berikutnya (pemantauan posisi aktif tiap {settings.MONITOR_INTERVAL_SECONDS} detik)...[/dim]")
             sleep_remaining = settings.SCAN_INTERVAL_SECONDS

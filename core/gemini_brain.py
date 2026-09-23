@@ -440,9 +440,10 @@ class GeminiBrain:
         if not active_positions:
             top_info = []
             for o in top_opportunities[:3]:
+                vol_24h = getattr(o, "volume_24h_usdt", o.spot_volume_24h + o.perp_volume_24h)
                 top_info.append(
                     f"- {o.base_asset}: Rate {o.current_funding_rate*100:+.4f}%/{o.funding_interval_hours}h, "
-                    f"Net APY: {o.net_apy_percent:.1f}%, Vol24h: ${o.volume_24h_usdt:,.0f}"
+                    f"Net APY: {o.net_apy_percent:.1f}%, Vol24h: ${vol_24h:,.0f}"
                 )
             market_summary = "\n".join(top_info) if top_info else "Tidak ada kandidat memenuhi syarat saat ini."
 

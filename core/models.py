@@ -52,6 +52,10 @@ class Opportunity(BaseModel):
     rejection_reason: Optional[str] = None
     scanned_at: datetime = Field(default_factory=datetime.utcnow)
 
+    @property
+    def volume_24h_usdt(self) -> float:
+        return float(self.spot_volume_24h + self.perp_volume_24h)
+
 class HistoricalFundingStats(BaseModel):
     # 30-Day Metrics
     thirty_day_cumulative_yield_pct: float = Field(default=0.0, description="Total akumulasi yield funding dalam 30 hari (%)")
