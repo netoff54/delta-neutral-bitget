@@ -79,6 +79,8 @@ class DeltaNeutralPosition(BaseModel):
     unrealized_pnl_usdt: float = 0.0
     net_pnl_usdt: float = 0.0
     is_bep_reached: bool = False
+    last_funding_rate: float = 0.0
+    projected_next_funding_payout: float = 0.0
     
     current_margin_ratio: float = 0.0
     liquidation_price: Optional[float] = None

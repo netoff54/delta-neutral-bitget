@@ -163,6 +163,7 @@ def display_active_positions():
     table.add_column("Unrealized PnL", style="white", justify="right")
     table.add_column("Net PnL", style="bold white", justify="right")
     table.add_column("Status BEP", justify="center")
+    table.add_column("Proyeksi Next", style="bright_cyan", justify="right")
     table.add_column("Margin Ratio", style="bold red", justify="right")
     table.add_column("Status", style="bold green", justify="center")
 
@@ -170,6 +171,8 @@ def display_active_positions():
         pnl_color = "green" if pos.net_pnl_usdt >= 0 else "red"
         unreal_color = "green" if pos.unrealized_pnl_usdt >= 0 else "yellow"
         bep_badge = "[bold green]✅ BEP Tercapai[/bold green]" if pos.is_bep_reached else f"[bold yellow]⏳ Menuju BEP ({pos.net_pnl_usdt:+.4f})[/bold yellow]"
+        interval = getattr(pos, "funding_interval_hours", 8) or 8
+        proj_badge = f"+${pos.projected_next_funding_payout:.4f}\n[dim]({interval}h)[/dim]" if pos.projected_next_funding_payout > 0 else "[dim]-[/dim]"
 
         table.add_row(
             pos.position_id,
@@ -181,6 +184,7 @@ def display_active_positions():
             f"[{unreal_color}]${pos.unrealized_pnl_usdt:+.4f}[/{unreal_color}]",
             f"[{pnl_color}]${pos.net_pnl_usdt:+.4f}[/{pnl_color}]",
             bep_badge,
+            proj_badge,
             f"{pos.current_margin_ratio:.1%}",
             pos.status
         )
@@ -240,10 +244,11 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
 
             if auto_trade and eligible_opportunities:
                 if active_count < max_allowed_positions:
-                    best_opp = eligible_opportunities[0]
+                    from core.gemini_brain import gemini_brain
+                    best_opp = await gemini_brain.select_optimal_taker_agi(eligible_opportunities, current_compounded_cap) or eligible_opportunities[0]
                     if not position_manager.get_position_by_base(best_opp.base_asset):
                         console.print(
-                            f"\n[bold green]🎯 Peluang Terbaik Terdeteksi: {best_opp.base_asset} "
+                            f"\n[bold green]🎯 Peluang Terbaik Terpilih AGI: {best_opp.base_asset} "
                             f"(Skor: {best_opp.composite_performance_score:.1f}, Prediksi Next: {best_opp.predicted_next_funding_rate*100:.4f}%, "
                             f"Net APY: {best_opp.net_apy_percent:.1f}%).\n"
                             f"Mengeksekusi posisi Delta-Neutral dengan Alokasi Modal Cair: ${current_compounded_cap:.2f} USDT "

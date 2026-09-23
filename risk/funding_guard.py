@@ -79,18 +79,32 @@ class FundingGuard:
                         )
                         continue
 
-            # 2. Deteksi Pembalikan Funding Rate (Negative Funding)
-            if current_rate <= settings.EMERGENCY_EXIT_FUNDING_RATE:
+            # 2. Deteksi Pembalikan Funding Rate (Zero-Tolerance: Rate < 0.0% langsung exit)
+            if current_rate < settings.EMERGENCY_EXIT_FUNDING_RATE:
                 log.warning(
-                    f"⚠️ [EMERGENCY EXIT] Funding rate untuk {pos.base_asset} menjadi negatif "
-                    f"({current_rate * 100:.4f}% <= {settings.EMERGENCY_EXIT_FUNDING_RATE * 100:.4f}%). "
-                    f"Memicu penutupan posisi darurat!"
+                    f"🚨 [ZERO-TOLERANCE EXIT] Funding rate untuk {pos.base_asset} menjadi negatif "
+                    f"({current_rate * 100:.4f}% < 0.0%). Menutup seluruh posisi dan membatalkan delta-neutral di taker ini!"
                 )
-                await self.executor.close_delta_neutral_position(
+                success_close = await self.executor.close_delta_neutral_position(
                     position_id=pos.position_id,
-                    reason=f"Funding Rate Negatif ({current_rate * 100:.4f}%)"
+                    reason=f"Zero-Tolerance Negative Funding ({current_rate * 100:.4f}%)"
                 )
+                if success_close:
+                    await self.find_and_reopen_new_taker()
                 continue
+
+            # Proyeksi Dividen Dinamis Menit-ke-Menit
+            interval = int(getattr(pos, "funding_interval_hours", 8) or 8)
+            proj = gemini_brain.generate_funding_projection(pos, current_rate, interval)
+            pos.last_funding_rate = current_rate
+            pos.projected_next_funding_payout = proj["projected_next_payout_usdt"]
+            self.pos_mgr.update_position(pos)
+
+            log.info(
+                f"📊 [Proyeksi Funding 1-Menit] {pos.base_asset}: Rate {proj['current_rate_percent']:+.4f}%/{interval}h -> "
+                f"Est. Payout Berikutnya: +${proj['projected_next_payout_usdt']:.5f} USDT "
+                f"(Est. +${proj['projected_daily_usdt']:.4f}/hari | {proj['projected_annual_apy_percent']:.1f}% APY)"
+            )
 
             # 3. Akumulasi Funding Fee Riil dari Ledger Bitget & Continuous Learning
             if pos.realized_funding_usdt > prev_cumulative:
@@ -123,7 +137,6 @@ class FundingGuard:
                 now = datetime.utcnow()
                 last_checked = self.last_funding_times.get(pos.position_id, pos.entry_time)
                 hours_passed = (now - last_checked).total_seconds() / 3600.0
-                interval = float(getattr(pos, "funding_interval_hours", 8) or 8)
 
                 if hours_passed >= interval:
                     cycle_count = int(hours_passed // interval)
@@ -144,5 +157,40 @@ class FundingGuard:
                         f"💰 [Harvest Estimasi] Posisi {pos.base_asset} estimasi funding fee: "
                         f"+${harvested:.4f} USDT (Total Terkumpul: ${pos.cumulative_funding_received:.4f})"
                     )
+
+    async def find_and_reopen_new_taker(self):
+        """
+        Setelah pembatalan taker darurat akibat rate negatif, segera pindai pasar
+        dan buka posisi di taker baru yang konsisten & potensial tanpa menunggu jeda waktu.
+        """
+        try:
+            log.info("🔍 [Pencarian Taker Baru] Memindai pasar untuk mencari taker potensial & konsisten...")
+            from scanner.opportunity_finder import opportunity_finder
+            from risk.compounding_manager import compounding_manager
+            
+            bal = await self.client.fetch_balance()
+            total_bal = float(bal.get("total", {}).get("USDT", 0.0) or bal.get("USDT", {}).get("total", 0.0) or 0.0)
+            capital = compounding_manager.get_position_capital(total_bal)
+            
+            opps = await opportunity_finder.scan(target_nominal_usdt=capital)
+            eligible_opps = [o for o in opps if o.is_eligible and o.current_funding_rate > 0.0]
+            
+            if not eligible_opps:
+                log.info("[Pencarian Taker Baru] Belum ada taker yang memenuhi syarat modal saat ini. Menunggu siklus pemindaian berikutnya.")
+                return
+
+            # Gunakan Gemini AGI untuk memilih taker paling konsisten & aman
+            best_opp = await gemini_brain.select_optimal_taker_agi(eligible_opps, capital) or eligible_opps[0]
+            
+            log.info(
+                f"🚀 [Relokasi Modal Cepat] Membuka posisi Delta-Neutral baru di {best_opp.base_asset} "
+                f"(Rate: {best_opp.current_funding_rate*100:+.4f}%/{best_opp.funding_interval_hours}h, Net APY: {best_opp.net_apy_percent:.1f}%)..."
+            )
+            await self.executor.open_delta_neutral_position(
+                opportunity=best_opp,
+                allocated_capital_usdt=capital
+            )
+        except Exception as e:
+            log.error(f"Gagal melakukan relokasi ke taker baru: {e}")
 
 funding_guard = FundingGuard()

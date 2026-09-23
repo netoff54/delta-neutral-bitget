@@ -96,11 +96,12 @@ class AutoRebalancer:
         if not active_positions:
             return
 
-        eligible_opps = [o for o in opportunities if o.is_eligible]
+        eligible_opps = [o for o in opportunities if o.is_eligible and o.current_funding_rate > 0.0]
         if not eligible_opps:
             return
 
-        best_new_opp = eligible_opps[0]
+        from core.gemini_brain import gemini_brain
+        best_new_opp = await gemini_brain.select_optimal_taker_agi(eligible_opps, capital_per_position) or eligible_opps[0]
 
         # Jangan rotasi ke koin yang sama
         for pos in active_positions:

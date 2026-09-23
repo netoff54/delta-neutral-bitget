@@ -56,7 +56,7 @@ class BotSettings(BaseSettings):
 
     # Risk Controls
     MARGIN_CALL_THRESHOLD: float = Field(default=0.75, description="Margin ratio warning threshold (75%)")
-    EMERGENCY_EXIT_FUNDING_RATE: float = Field(default=-0.0001, description="Threshold for negative funding emergency exit")
+    EMERGENCY_EXIT_FUNDING_RATE: float = Field(default=0.0, description="Zero tolerance untuk funding rate negatif (< 0.0% langsung exit)")
     EXIT_NEGATIVE_CYCLES_COUNT: int = Field(default=1, description="Negative funding cycle count to trigger exit")
 
     # Telegram Alerts
@@ -68,6 +68,7 @@ class BotSettings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = Field(default=None, description="API Key Google Gemini")
     GEMINI_MODEL: str = Field(default="gemini-3.6-flash", description="Model Gemini untuk AI Brain")
     ENABLE_AI_BRAIN: bool = Field(default=True, description="Aktifkan AI Adaptive Brain untuk evaluasi posisi & rotasi")
+    AI_CONTINUOUS_LEARNING: bool = Field(default=True, description="Simpan dan kembangkan memori pembelajaran AGI berkelanjutan")
     
     # Pre-settlement Funding Watcher
     PRE_SETTLEMENT_CHECK_MINUTES: int = Field(default=5, description="Jendela waktu pra-settlement (5 menit)")
