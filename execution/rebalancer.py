@@ -6,6 +6,7 @@ from config.settings import settings
 from utils.logger import log
 from utils.notifier import notifier
 from core.models import Opportunity, DeltaNeutralPosition
+from utils.interval_helper import safe_hours_passed
 from core.bitget_client import BitgetClient, bitget_client
 from execution.position_manager import PositionManager, position_manager
 from execution.order_executor import OrderExecutor, order_executor
@@ -108,8 +109,7 @@ class AutoRebalancer:
             if pos.base_asset == best_new_opp.base_asset:
                 continue
 
-            now = datetime.utcnow()
-            holding_hours = (now - pos.entry_time).total_seconds() / 3600.0
+            holding_hours = safe_hours_passed(pos.entry_time)
 
             # Sinkronisasi status PnL riil dan funding fee dari ledger
             await self.client.update_position_live_pnl(pos)

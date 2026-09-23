@@ -71,3 +71,33 @@ def cycles_per_day(interval_hours: int) -> float:
 def calculate_apy(funding_rate: float, interval_hours: int) -> float:
     """Menghitung APY tahunan dari funding rate per siklus dan interval jam."""
     return round(funding_rate * cycles_per_day(interval_hours) * 365.0 * 100.0, 2)
+
+def safe_hours_passed(dt_start: Any, dt_end: Any = None) -> float:
+    """
+    Menghitung selisih waktu dalam jam secara aman tanpa risiko TypeError
+    akibat perbedaan timezone (offset-naive vs offset-aware) atau input string ISO.
+    """
+    from datetime import datetime, timezone
+    if dt_end is None:
+        dt_end = datetime.now(timezone.utc)
+    elif isinstance(dt_end, str):
+        try:
+            dt_end = datetime.fromisoformat(dt_end.replace("Z", "+00:00"))
+        except Exception:
+            dt_end = datetime.now(timezone.utc)
+
+    if isinstance(dt_start, str):
+        try:
+            dt_start = datetime.fromisoformat(dt_start.replace("Z", "+00:00"))
+        except Exception:
+            return 0.0
+
+    if not isinstance(dt_start, datetime):
+        return 0.0
+
+    if dt_start.tzinfo is None:
+        dt_start = dt_start.replace(tzinfo=timezone.utc)
+    if dt_end.tzinfo is None:
+        dt_end = dt_end.replace(tzinfo=timezone.utc)
+
+    return max(0.0, (dt_end - dt_start).total_seconds() / 3600.0)

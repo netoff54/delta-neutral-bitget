@@ -10,6 +10,7 @@ from execution.position_manager import PositionManager, position_manager
 from execution.order_executor import OrderExecutor, order_executor
 from risk.yield_vault import yield_vault
 from risk.compounding_manager import compounding_manager
+from utils.interval_helper import safe_hours_passed
 
 from core.gemini_brain import gemini_brain
 from core.historical_store import historical_store
@@ -100,7 +101,7 @@ class FundingGuard:
                             funding_rate=current_rate,
                             harvest_usdt=pos.cumulative_funding_received,
                             net_pnl_usdt=pos.net_pnl_usdt,
-                            holding_hours=(datetime.utcnow() - pos.entry_time).total_seconds() / 3600.0,
+                            holding_hours=safe_hours_passed(pos.entry_time),
                             was_bep_reached=pos.is_bep_reached,
                             ai_decision="EMERGENCY_EXIT",
                             lesson_learned=f"Terkikis rate negatif ({current_rate*100:.4f}% < 0.0%). Exit darurat untuk selamatkan modal.",
@@ -166,16 +167,16 @@ class FundingGuard:
                     )
             elif pos.realized_funding_usdt == 0.0:
                 # Fallback estimasi siklus jika mode dry-run atau ledger delay
-                now = datetime.utcnow()
                 last_checked = self.last_funding_times.get(pos.position_id, pos.entry_time)
-                hours_passed = (now - last_checked).total_seconds() / 3600.0
+                hours_passed = safe_hours_passed(last_checked)
 
                 if hours_passed >= interval:
                     cycle_count = int(hours_passed // interval)
                     harvested = pos.perp_leg.nominal_usdt * current_rate * cycle_count
                     pos.cumulative_funding_received += harvested
                     pos.funding_payments_count += cycle_count
-                    self.last_funding_times[pos.position_id] = now
+                    from datetime import timezone
+                    self.last_funding_times[pos.position_id] = datetime.now(timezone.utc)
                     self.pos_mgr.update_position(pos)
 
                     compounding_manager.add_harvest_profit(
