@@ -216,7 +216,7 @@ class OrderExecutor:
             f"Kuantitas: `{actual_qty}`\n"
             f"Spot Buy: `${spot_res.avg_price:,.4f}`\n"
             f"Perp Short: `${perp_res.avg_price:,.4f}`\n"
-            f"Funding Rate: `{opportunity.current_funding_rate * 100:.4f}%/8h`\n"
+            f"Funding Rate: `{opportunity.current_funding_rate * 100:.4f}%/{opportunity.funding_interval_hours}h`\n"
             f"Est. Net APY: `{opportunity.net_apy_percent:.1f}%`\n"
             f"Delta Bersih: `{net_delta}`"
         )

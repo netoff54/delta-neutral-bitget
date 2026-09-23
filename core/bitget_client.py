@@ -6,6 +6,7 @@ import ccxt.async_support as ccxt
 from config.settings import settings
 from utils.logger import log
 from utils.dns_resolver import patch_dns
+from utils.interval_helper import parse_interval_hours, detect_empirical_interval
 from core.models import OrderExecutionResult
 
 class BitgetClient:
@@ -50,7 +51,7 @@ class BitgetClient:
 
     async def fetch_fund_rates_and_intervals(self) -> Dict[str, Dict[str, Any]]:
         """
-        Mengambil funding rate terkini beserta interval penyelesaian dinamis (misal 4h, 8h, 1h)
+        Mengambil funding rate terkini beserta interval penyelesaian dinamis (1h, 4h, 8h)
         dan timestamp pembayaran berikutnya langsung dari endpoint Bitget V2.
         """
         try:
@@ -59,9 +60,15 @@ class BitgetClient:
             result = {}
             for item in data:
                 raw_sym = item.get("symbol", "")
-                interval_str = item.get("fundingRateInterval", "8")
-                interval_hours = int(interval_str) if interval_str and interval_str.isdigit() else 8
-                rate = float(item.get("fundingRate", 0.0))
+                interval_raw = (
+                    item.get("fundingRateInterval") or
+                    item.get("ratePeriod") or
+                    item.get("fundingInterval") or
+                    item.get("fundInterval") or
+                    item.get("settleInterval")
+                )
+                interval_hours = parse_interval_hours(interval_raw, default=8)
+                rate = float(item.get("fundingRate", 0.0) or 0.0)
                 next_ts = int(item.get("nextUpdate", 0)) if item.get("nextUpdate") else None
 
                 # Konversi nama symbol Bitget (e.g. BTCUSDT) ke format standar CCXT (BTC/USDT:USDT)
@@ -82,8 +89,13 @@ class BitgetClient:
             return {
                 sym: {
                     "symbol": sym,
-                    "fundingRate": float(r.get("fundingRate", 0.0)),
-                    "fundingInterval": 8,
+                    "fundingRate": float(r.get("fundingRate", 0.0) or 0.0),
+                    "fundingInterval": parse_interval_hours(
+                        r.get("info", {}).get("fundingRateInterval") or
+                        r.get("info", {}).get("ratePeriod") or
+                        r.get("interval"),
+                        default=8
+                    ),
                     "nextUpdate": r.get("fundingTimestamp")
                 }
                 for sym, r in fallback_rates.items()
@@ -426,12 +438,14 @@ class BitgetClient:
         """
         Mengambil waktu settlement funding terdekat dan menghitung countdown serta
         rate terkini yang diproyeksikan akan dibayarkan exchange dalam 5 menit ke depan.
+        Mendukung interval dinamis (1h, 4h, 8h).
         """
         clean_sym = perp_symbol.split('/')[0].upper() + "USDT"
         now_ms = int(datetime.utcnow().timestamp() * 1000)
         default_res = {
             "symbol": clean_sym,
             "current_projected_rate": 0.0,
+            "funding_interval_hours": 8,
             "next_settlement_timestamp_ms": now_ms + (8 * 3600 * 1000),
             "seconds_until_settlement": 8 * 3600,
             "minutes_until_settlement": 480.0,
@@ -449,7 +463,14 @@ class BitgetClient:
             if data_list:
                 item = data_list[0]
                 rate = float(item.get("fundingRate", 0.0) or 0.0)
-                next_update_ms = int(item.get("nextUpdate", now_ms))
+                interval_raw = (
+                    item.get("fundingRateInterval") or
+                    item.get("ratePeriod") or
+                    item.get("fundingInterval") or
+                    item.get("settleInterval")
+                )
+                interval_hours = parse_interval_hours(interval_raw, default=8)
+                next_update_ms = int(item.get("nextUpdate", now_ms + (interval_hours * 3600 * 1000)))
                 diff_ms = max(0, next_update_ms - now_ms)
                 seconds_left = diff_ms / 1000.0
                 window_seconds = settings.PRE_SETTLEMENT_CHECK_MINUTES * 60
@@ -457,6 +478,7 @@ class BitgetClient:
                 return {
                     "symbol": clean_sym,
                     "current_projected_rate": rate,
+                    "funding_interval_hours": interval_hours,
                     "next_settlement_timestamp_ms": next_update_ms,
                     "seconds_until_settlement": seconds_left,
                     "minutes_until_settlement": round(seconds_left / 60.0, 1),

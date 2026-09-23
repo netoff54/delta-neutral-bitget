@@ -48,7 +48,8 @@ class FundingGuard:
                 continue
 
             current_rate = float(fr_data.get("fundingRate", 0.0))
-            log.info(f"[FundingGuard] {pos.base_asset}: Funding Rate saat ini: {current_rate * 100:.4f}%/8h")
+            pos_interval = int(getattr(pos, "funding_interval_hours", 8) or 8)
+            log.info(f"[FundingGuard] {pos.base_asset}: Funding Rate saat ini: {current_rate * 100:.4f}%/{pos_interval}h")
 
             # Sinkronisasi status PnL riil dan funding fee dari ledger Bitget
             prev_cumulative = pos.cumulative_funding_received

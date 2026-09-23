@@ -319,8 +319,9 @@ class GeminiBrain:
             + "\n".join(candidates_summary) + "\n\n"
             f"Prinsip Keputusan Delta-Neutral Profesional:\n"
             f"1. Utamakan koin dengan 30-Day Cumulative Yield positif tinggi dan Zero/Minimal Flip (<= 1x rate negatif dalam 30 hari).\n"
-            f"2. Pastikan biaya taker (spot + perp) cepat terbayar dari dividen funding (Taker Impas < 48 jam).\n"
-            f"3. Hindari koin dengan tren Decay tajam atau riwayat reputasi masa lalu yang buruk.\n\n"
+            f"2. Perhatikan interval waktu pembayaran funding fee (1 jam, 4 jam, atau 8 jam). Koin dengan interval 1h atau 4h memberikan frekuensi panen dividen lebih sering per hari (24x/hari untuk 1h, 6x/hari untuk 4h) sehingga mempercepat tercapainya impas biaya taker.\n"
+            f"3. Pastikan biaya taker (spot + perp) cepat terbayar dari dividen funding (Taker Impas < 48 jam).\n"
+            f"4. Hindari koin dengan tren Decay tajam atau riwayat reputasi masa lalu yang buruk.\n\n"
             f"Tugas: Tentukan SATU koin terbaik yang paling konsisten positif, aman dari risiko flip, dan berdaya hasil tinggi.\n"
             f"Format jawaban: 'PILIH: [KOIN]' diikuti alasan 1 kalimat berbasis data historis 30 hari & biaya taker."
         )

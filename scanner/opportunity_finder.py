@@ -10,6 +10,7 @@ from core.historical_store import historical_store
 from analytics.fee_calculator import FeeCalculator, fee_calculator
 from analytics.performance_scorer import PerformanceScorer, performance_scorer
 from analytics.funding_history_analyzer import funding_history_analyzer
+from utils.interval_helper import parse_interval_hours, detect_empirical_interval, cycles_per_day
 
 class OpportunityFinder:
     """
@@ -82,8 +83,8 @@ class OpportunityFinder:
             # Basis Spread (%)
             basis_spread_pct = ((perp_price - spot_price) / spot_price) * 100.0
 
-            # Next funding time & interval dinamis (bisa 4h, 8h, 1h)
-            interval_hours = int(fr_data.get("fundingInterval", 8))
+            # Next funding time & interval dinamis (1h, 4h, 8h)
+            interval_hours = parse_interval_hours(fr_data.get("fundingInterval"), default=8)
             next_funding_ts = fr_data.get("nextUpdate") or fr_data.get("fundingTimestamp")
             next_funding_time = datetime.utcfromtimestamp(next_funding_ts / 1000.0) if next_funding_ts else None
 
@@ -197,14 +198,48 @@ class OpportunityFinder:
             # 1. Ambil riwayat dari SQLite store 30 hari
             stored_30d = historical_store.get_funding_history(opp.perp_symbol, days=30)
             
-            # Jika data di SQLite belum lengkap (< 45 data siklus = ~15 hari), lakukan backfill 30 hari dari API Bitget
-            if len(stored_30d) < 45:
+            # Hitung target siklus 30 hari sesuai interval dinamis (1h = 720 siklus, 4h = 180 siklus, 8h = 90 siklus)
+            dyn_cycles_per_day = cycles_per_day(opp.funding_interval_hours)
+            expected_30d_cycles = int(30 * dyn_cycles_per_day)
+            min_required_cycles = max(10, int(expected_30d_cycles * 0.4))
+
+            # Jika data di SQLite belum lengkap (< 40% target siklus), lakukan backfill 30 hari dari API Bitget
+            if len(stored_30d) < min_required_cycles:
                 fetched_history = await self.client.fetch_funding_rate_history(
                     opp.perp_symbol,
                     since=since_30d,
-                    limit=100
+                    limit=min(500, max(100, expected_30d_cycles))
                 )
                 if fetched_history:
+                    # Deteksi interval empiris dari selisih timestamp riil antar-settlement Bitget
+                    ts_list = [
+                        int(h.get("fundingTimestamp") or h.get("timestamp") or h.get("fundingTime") or 0)
+                        for h in fetched_history
+                        if (h.get("fundingTimestamp") or h.get("timestamp") or h.get("fundingTime"))
+                    ]
+                    empirical_int = detect_empirical_interval(ts_list, default=opp.funding_interval_hours)
+                    if empirical_int != opp.funding_interval_hours:
+                        log.info(
+                            f"⚡ [Interval Dinamis Terdeteksi] {opp.base_asset}: Interval disesuaikan dari "
+                            f"{opp.funding_interval_hours}h ke {empirical_int}h berdasarkan timestamp riil Bitget."
+                        )
+                        opp.funding_interval_hours = empirical_int
+                        # Re-evaluasi kelayakan peluang dengan interval baru yang tepat
+                        eval_updated = self.calculator.evaluate_opportunity(
+                            funding_rate=opp.current_funding_rate,
+                            nominal_value_usdt=target_nominal_usdt,
+                            funding_interval_hours=opp.funding_interval_hours,
+                            basis_spread_percent=opp.basis_spread_percent
+                        )
+                        opp.fee_breakdown = eval_updated["fee_breakdown"]
+                        opp.gross_cycle_yield_percent = eval_updated["gross_cycle_yield_percent"]
+                        opp.gross_apy_percent = eval_updated["gross_apy_percent"]
+                        opp.net_apy_percent = eval_updated["net_apy_percent"]
+                        opp.break_even_cycles = eval_updated["break_even_cycles"]
+                        opp.break_even_hours = eval_updated["break_even_hours"]
+                        opp.is_eligible = eval_updated["is_eligible"]
+                        opp.rejection_reason = eval_updated["rejection_reason"]
+
                     historical_store.record_funding_rates(
                         opp.perp_symbol,
                         fetched_history,
