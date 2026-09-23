@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 import ccxt.async_support as ccxt
 
@@ -415,6 +416,51 @@ class BitgetClient:
             "required_leg_usdt": required_leg,
             "required_min_capital_usdt": round(required_capital, 2)
         }
+
+    async def get_funding_settlement_countdown(self, perp_symbol: str) -> Dict[str, Any]:
+        """
+        Mengambil waktu settlement funding terdekat dan menghitung countdown serta
+        rate terkini yang diproyeksikan akan dibayarkan exchange dalam 5 menit ke depan.
+        """
+        clean_sym = perp_symbol.split('/')[0].upper() + "USDT"
+        now_ms = int(datetime.utcnow().timestamp() * 1000)
+        default_res = {
+            "symbol": clean_sym,
+            "current_projected_rate": 0.0,
+            "next_settlement_timestamp_ms": now_ms + (8 * 3600 * 1000),
+            "seconds_until_settlement": 8 * 3600,
+            "minutes_until_settlement": 480.0,
+            "is_near_settlement": False
+        }
+        if settings.DRY_RUN:
+            return default_res
+
+        try:
+            res = await self.client.publicMixGetV2MixMarketCurrentFundRate({
+                "productType": "USDT-FUTURES",
+                "symbol": clean_sym
+            })
+            data_list = res.get("data", [])
+            if data_list:
+                item = data_list[0]
+                rate = float(item.get("fundingRate", 0.0) or 0.0)
+                next_update_ms = int(item.get("nextUpdate", now_ms))
+                diff_ms = max(0, next_update_ms - now_ms)
+                seconds_left = diff_ms / 1000.0
+                window_seconds = settings.PRE_SETTLEMENT_CHECK_MINUTES * 60
+
+                return {
+                    "symbol": clean_sym,
+                    "current_projected_rate": rate,
+                    "next_settlement_timestamp_ms": next_update_ms,
+                    "seconds_until_settlement": seconds_left,
+                    "minutes_until_settlement": round(seconds_left / 60.0, 1),
+                    "is_near_settlement": (seconds_left <= window_seconds)
+                }
+        except Exception as e:
+            log.debug(f"Gagal mengambil countdown settlement untuk {clean_sym}: {e}")
+
+        return default_res
 
     async def fetch_realized_funding_fee(self, base_asset: str, since_timestamp_ms: Optional[int] = None) -> float:
         """

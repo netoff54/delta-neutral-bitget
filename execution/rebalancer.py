@@ -136,6 +136,20 @@ class AutoRebalancer:
                 apy_gain = best_new_opp.net_apy_percent - old_apy
 
                 if apy_gain >= settings.MIN_ROTATION_APY_DIFF:
+                    # Konsultasi AI Brain sebelum eksekusi rotasi
+                    from core.gemini_brain import gemini_brain
+                    if settings.ENABLE_AI_BRAIN:
+                        ai_approved = await gemini_brain.evaluate_rotation_candidate(
+                            current_pos=pos,
+                            candidate_opp=best_new_opp
+                        )
+                        if not ai_approved:
+                            log.info(
+                                f"✋ [Rotasi Ditahan oleh AI Brain] Gemini AI menyarankan tetap hold {pos.base_asset} "
+                                f"karena yield saat ini masih optimal dan meminimalkan biaya fee baru."
+                            )
+                            continue
+
                     rotation_msg = (
                         f"🔄 *[ROTASI PELUANG TERDETEKSI]*\n"
                         f"Menutup: `{pos.base_asset}` (Net APY: `{old_apy:.1f}%`)\n"

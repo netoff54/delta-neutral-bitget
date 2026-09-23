@@ -11,12 +11,15 @@ from execution.order_executor import OrderExecutor, order_executor
 from risk.yield_vault import yield_vault
 from risk.compounding_manager import compounding_manager
 
+from core.gemini_brain import gemini_brain
+
 class FundingGuard:
     """
     Penjaga Funding Rate:
     1. Memantau apakah funding rate pada posisi aktif berubah menjadi negatif.
-    2. Menghitung dan mencatat akumulasi pembayaran funding fee yang diterima.
-    3. Memicu auto-exit jika funding rate merugikan trader.
+    2. Pemantauan Pra-Settlement (5 menit sebelum pembayaran funding) untuk mendeteksi perubahan drastis rate.
+    3. AI Continuous Learning: Mempelajari efisiensi posisi dengan Google Gemini setelah tiap panen.
+    4. Memicu auto-exit jika funding rate merugikan trader.
     """
 
     def __init__(
@@ -50,7 +53,33 @@ class FundingGuard:
             prev_cumulative = pos.cumulative_funding_received
             await self.client.update_position_live_pnl(pos)
 
-            # 1. Deteksi Pembalikan Funding Rate (Negative Funding)
+            # 1. Pemantauan Pra-Settlement (5 Menit Menuju Pembayaran Funding Fee)
+            countdown = await self.client.get_funding_settlement_countdown(pos.perp_leg.symbol)
+            if countdown.get("is_near_settlement"):
+                mins_left = countdown["minutes_until_settlement"]
+                proj_rate = countdown["current_projected_rate"]
+                log.info(
+                    f"⏱️ [Pra-Settlement 5 Menit] {pos.base_asset}: {mins_left}m menuju settlement. "
+                    f"Projected Rate: {proj_rate * 100:+.4f}%"
+                )
+                if settings.ENABLE_AI_BRAIN:
+                    ai_risk = await gemini_brain.evaluate_pre_settlement_risk(
+                        pos=pos,
+                        projected_rate=proj_rate,
+                        seconds_until_settlement=countdown["seconds_until_settlement"]
+                    )
+                    if ai_risk.get("action") == "EMERGENCY_EXIT":
+                        log.critical(
+                            f"🚨 [AI Brain Emergency Exit] {pos.base_asset}: {ai_risk.get('message')}. "
+                            f"Menutup posisi sebelum pemotongan funding fee minus!"
+                        )
+                        await self.executor.close_delta_neutral_position(
+                            position_id=pos.position_id,
+                            reason=f"AI Pre-Settlement Exit ({proj_rate * 100:+.4f}%)"
+                        )
+                        continue
+
+            # 2. Deteksi Pembalikan Funding Rate (Negative Funding)
             if current_rate <= settings.EMERGENCY_EXIT_FUNDING_RATE:
                 log.warning(
                     f"⚠️ [EMERGENCY EXIT] Funding rate untuk {pos.base_asset} menjadi negatif "
@@ -63,7 +92,7 @@ class FundingGuard:
                 )
                 continue
 
-            # 2. Akumulasi Funding Fee Riil dari Ledger Bitget
+            # 3. Akumulasi Funding Fee Riil dari Ledger Bitget & Continuous Learning
             if pos.realized_funding_usdt > prev_cumulative:
                 harvested = pos.realized_funding_usdt - prev_cumulative
                 pos.funding_payments_count += 1
@@ -81,6 +110,14 @@ class FundingGuard:
                     f"+${harvested:.4f} USDT (Total Terkumpul: ${pos.cumulative_funding_received:.4f} | "
                     f"Net PnL: ${pos.net_pnl_usdt:+.4f} | Status BEP: {'✅ Sudah BEP' if pos.is_bep_reached else '⏳ Belum BEP'})"
                 )
+
+                # Evaluasi & Pembelajaran Adaptif Gemini AI Brain
+                if settings.ENABLE_AI_BRAIN:
+                    await gemini_brain.evaluate_harvest_and_learn(
+                        pos=pos,
+                        harvest_amount_usdt=harvested,
+                        current_rate=current_rate
+                    )
             elif pos.realized_funding_usdt == 0.0:
                 # Fallback estimasi siklus jika mode dry-run atau ledger delay
                 now = datetime.utcnow()

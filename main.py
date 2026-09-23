@@ -78,6 +78,24 @@ def display_compounding_pool(total_liquid_usdt: float, spot_free: float = 0.0, s
             box=box.ROUNDED
         ))
 
+def display_ai_brain_status():
+    """Menampilkan status dan wawasan pembelajaran terkini dari Google Gemini AI Brain."""
+    if not settings.ENABLE_AI_BRAIN or not settings.GEMINI_API_KEY:
+        return
+    try:
+        from core.gemini_brain import gemini_brain
+        insight = gemini_brain.get_latest_insight()
+        mem_count = len(gemini_brain.memory)
+        console.print(Panel(
+            f"[bold magenta]🧠 AI BRAIN ENGINE:[/bold magenta] [bold cyan]{settings.GEMINI_MODEL}[/bold cyan] "
+            f"[dim]({mem_count} siklus evaluasi & pembelajaran tersimpan di disk)[/dim]\n"
+            f"[bold yellow]💡 INSIGHT STRATEGIS TERKINI:[/bold yellow]\n[italic white]{insight}[/italic white]",
+            title="[bold magenta]Google Gemini AI Adaptive Brain[/bold magenta]",
+            box=box.ROUNDED
+        ))
+    except Exception as e:
+        log.debug(f"AI Brain status display notice: {e}")
+
 def display_opportunities(opportunities, top_n: int = 10):
     """Menampilkan tabel hasil pemindaian peluang dengan analisis prediktif."""
     table = Table(
@@ -187,6 +205,7 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
             swap_free = float(bal.get("swap_free", 0.0))
             otc_free = float(bal.get("otc_free", 0.0))
             display_compounding_pool(total_bal, spot_free, swap_free, otc_free)
+            display_ai_brain_status()
 
             # Hitung modal trading dinamis yang dialokasikan (seluruh saldo cair atau manual override)
             current_compounded_cap = manual_capital if manual_capital else compounding_manager.get_position_capital(total_bal)

@@ -64,6 +64,14 @@ class BotSettings(BaseSettings):
     TELEGRAM_BOT_TOKEN: Optional[str] = Field(default=None)
     TELEGRAM_CHAT_ID: Optional[str] = Field(default=None)
 
+    # AI Adaptive Brain (Google Gemini)
+    GEMINI_API_KEY: Optional[str] = Field(default=None, description="API Key Google Gemini")
+    GEMINI_MODEL: str = Field(default="gemini-3.6-flash", description="Model Gemini untuk AI Brain")
+    ENABLE_AI_BRAIN: bool = Field(default=True, description="Aktifkan AI Adaptive Brain untuk evaluasi posisi & rotasi")
+    
+    # Pre-settlement Funding Watcher
+    PRE_SETTLEMENT_CHECK_MINUTES: int = Field(default=5, description="Jendela waktu pra-settlement (5 menit)")
+
     # Polling intervals (seconds)
     SCAN_INTERVAL_SECONDS: int = Field(default=300, description="Interval between opportunity scans (5 mins)")
     MONITOR_INTERVAL_SECONDS: int = Field(default=60, description="Interval between position health checks (1 min)")
