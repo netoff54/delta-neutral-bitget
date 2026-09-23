@@ -74,6 +74,12 @@ class DeltaNeutralPosition(BaseModel):
     funding_payments_count: int = 0
     total_fees_paid: float = 0.0
     
+    # Real-time PnL & BEP Tracking
+    realized_funding_usdt: float = 0.0
+    unrealized_pnl_usdt: float = 0.0
+    net_pnl_usdt: float = 0.0
+    is_bep_reached: bool = False
+    
     current_margin_ratio: float = 0.0
     liquidation_price: Optional[float] = None
     

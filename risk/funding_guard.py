@@ -46,6 +46,10 @@ class FundingGuard:
             current_rate = float(fr_data.get("fundingRate", 0.0))
             log.info(f"[FundingGuard] {pos.base_asset}: Funding Rate saat ini: {current_rate * 100:.4f}%/8h")
 
+            # Sinkronisasi status PnL riil dan funding fee dari ledger Bitget
+            prev_cumulative = pos.cumulative_funding_received
+            await self.client.update_position_live_pnl(pos)
+
             # 1. Deteksi Pembalikan Funding Rate (Negative Funding)
             if current_rate <= settings.EMERGENCY_EXIT_FUNDING_RATE:
                 log.warning(
@@ -59,23 +63,12 @@ class FundingGuard:
                 )
                 continue
 
-            # 2. Akumulasi Funding Fee
-            # Jika siklus funding telah lewat, estimasikan penerimaan fee
-            now = datetime.utcnow()
-            last_checked = self.last_funding_times.get(pos.position_id, pos.entry_time)
-            hours_passed = (now - last_checked).total_seconds() / 3600.0
-
-            # Siklus dinamis (menyesuaikan koin 4h, 8h, 1h)
-            interval = float(getattr(pos, "funding_interval_hours", 8) or 8)
-            if hours_passed >= interval:
-                cycle_count = int(hours_passed // interval)
-                harvested = pos.perp_leg.nominal_usdt * current_rate * cycle_count
-                pos.cumulative_funding_received += harvested
-                pos.funding_payments_count += cycle_count
-                self.last_funding_times[pos.position_id] = now
+            # 2. Akumulasi Funding Fee Riil dari Ledger Bitget
+            if pos.realized_funding_usdt > prev_cumulative:
+                harvested = pos.realized_funding_usdt - prev_cumulative
+                pos.funding_payments_count += 1
                 self.pos_mgr.update_position(pos)
 
-                # Putar kembali profit ke modal trading delta-neutral (Compounding)
                 compounding_manager.add_harvest_profit(
                     position_id=pos.position_id,
                     base_asset=pos.base_asset,
@@ -84,8 +77,35 @@ class FundingGuard:
                 )
 
                 log.info(
-                    f"💰 [Harvest] Posisi {pos.base_asset} menerima funding fee: "
-                    f"+${harvested:.4f} USDT (Total Terkumpul: ${pos.cumulative_funding_received:.4f})"
+                    f"💰 [Harvest Riil Ledger] Posisi {pos.base_asset} menerima funding fee: "
+                    f"+${harvested:.4f} USDT (Total Terkumpul: ${pos.cumulative_funding_received:.4f} | "
+                    f"Net PnL: ${pos.net_pnl_usdt:+.4f} | Status BEP: {'✅ Sudah BEP' if pos.is_bep_reached else '⏳ Belum BEP'})"
                 )
+            elif pos.realized_funding_usdt == 0.0:
+                # Fallback estimasi siklus jika mode dry-run atau ledger delay
+                now = datetime.utcnow()
+                last_checked = self.last_funding_times.get(pos.position_id, pos.entry_time)
+                hours_passed = (now - last_checked).total_seconds() / 3600.0
+                interval = float(getattr(pos, "funding_interval_hours", 8) or 8)
+
+                if hours_passed >= interval:
+                    cycle_count = int(hours_passed // interval)
+                    harvested = pos.perp_leg.nominal_usdt * current_rate * cycle_count
+                    pos.cumulative_funding_received += harvested
+                    pos.funding_payments_count += cycle_count
+                    self.last_funding_times[pos.position_id] = now
+                    self.pos_mgr.update_position(pos)
+
+                    compounding_manager.add_harvest_profit(
+                        position_id=pos.position_id,
+                        base_asset=pos.base_asset,
+                        profit_usdt=harvested,
+                        funding_rate=current_rate
+                    )
+
+                    log.info(
+                        f"💰 [Harvest Estimasi] Posisi {pos.base_asset} estimasi funding fee: "
+                        f"+${harvested:.4f} USDT (Total Terkumpul: ${pos.cumulative_funding_received:.4f})"
+                    )
 
 funding_guard = FundingGuard()

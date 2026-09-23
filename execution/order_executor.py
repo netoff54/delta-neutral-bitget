@@ -81,8 +81,12 @@ class OrderExecutor:
             price=opportunity.spot_price
         )
 
-        if aligned_qty <= 0:
-            log.warning(f"Kuantitas {base} terlalu kecil untuk batas minimum order ({aligned_qty}).")
+        min_cost_info = self.client.get_min_order_cost(opportunity.spot_symbol, opportunity.perp_symbol)
+        if aligned_qty <= 0 or (aligned_qty * opportunity.spot_price) < min_cost_info["perp_cost_min"]:
+            log.warning(
+                f"Kuantitas {base} ({aligned_qty} token, ~${aligned_qty * opportunity.spot_price:.2f}) "
+                f"di bawah batas minimum order exchange (Futures Min: ${min_cost_info['perp_cost_min']:.2f} USDT)."
+            )
             return None
 
         # Hitung kebutuhan dana per dompet (Spot vs Futures Margin)
@@ -145,10 +149,21 @@ class OrderExecutor:
                 f"[EMERGENCY UNWIND] Gagal Short Perp {opportunity.perp_symbol}: {perp_res.error_message}. "
                 f"Melakukan auto-sell pada Spot {opportunity.spot_symbol} untuk melindungi modal!"
             )
+            # Ambil saldo koin spot aktual yang bebas agar tidak ditolak karena selisih fee potong token
+            sell_qty = actual_qty
+            try:
+                spot_bal = await self.client.client.fetch_balance({"type": "spot"})
+                free_coin = float(spot_bal.get("free", {}).get(opportunity.base_asset, 0.0) or 0.0)
+                if free_coin > 0:
+                    formatted_free = float(self.client.client.amount_to_precision(opportunity.spot_symbol, free_coin))
+                    sell_qty = min(actual_qty, formatted_free)
+            except Exception as e:
+                log.debug(f"Spot balance check notice on emergency unwind: {e}")
+
             await self.client.execute_spot_order(
                 symbol=opportunity.spot_symbol,
                 side="sell",
-                amount=actual_qty,
+                amount=sell_qty,
                 order_type="market"
             )
             return None

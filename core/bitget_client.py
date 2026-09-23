@@ -352,6 +352,9 @@ class BitgetClient:
         """
         Menghitung kuantitas token yang terkalibrasi secara presisi antara Spot dan Perp
         agar Net Delta benar-benar 0 (tidak ada sisa desimal yang tidak ter-hedge).
+        SECARA KETAT MENGECEK:
+        1. Minimal Token Lot Size (limits.amount.min)
+        2. Minimal Nilai Nominal USDT (limits.cost.min, misal $5 USDT di Futures Bitget)
         """
         raw_qty = target_nominal_usdt / price
 
@@ -371,8 +374,128 @@ class BitgetClient:
 
         if perp_market and perp_symbol in self.client.markets:
             formatted_str = self.client.amount_to_precision(perp_symbol, aligned_qty)
-            return float(formatted_str)
-        return round(aligned_qty, 6)
+            aligned_qty = float(formatted_str)
+        else:
+            aligned_qty = round(aligned_qty, 6)
+
+        # Cek Batasan Minimal Nominal USDT (limits.cost.min):
+        # Di Bitget Futures, order bernilai di bawah $5.0 USDT akan ditolak exchange (Error 45110).
+        perp_cost_min = float(perp_market.get("limits", {}).get("cost", {}).get("min", 5.0) or 5.0) if perp_market else 5.0
+        spot_cost_min = float(spot_market.get("limits", {}).get("cost", {}).get("min", 1.0) or 1.0) if spot_market else 1.0
+        perp_cost_min = max(5.0, perp_cost_min)
+        spot_cost_min = max(1.0, spot_cost_min)
+
+        notional = aligned_qty * price
+        if notional < perp_cost_min or notional < spot_cost_min:
+            log.debug(
+                f"[Market Limit] Nominal {aligned_qty} token (${notional:.2f} USDT) di bawah batas minimal "
+                f"(Futures Min: ${perp_cost_min:.2f}, Spot Min: ${spot_cost_min:.2f})"
+            )
+            return 0.0
+
+        return aligned_qty
+
+    def get_min_order_cost(self, spot_symbol: str, perp_symbol: str) -> Dict[str, float]:
+        """Mendapatkan batas minimal order notional (dalam USDT) untuk Spot dan Futures."""
+        perp_market = self.get_market(perp_symbol)
+        spot_market = self.get_market(spot_symbol)
+
+        perp_cost_min = float(perp_market.get("limits", {}).get("cost", {}).get("min", 5.0) or 5.0) if perp_market else 5.0
+        spot_cost_min = float(spot_market.get("limits", {}).get("cost", {}).get("min", 1.0) or 1.0) if spot_market else 1.0
+        perp_cost_min = max(5.0, perp_cost_min)
+        spot_cost_min = max(1.0, spot_cost_min)
+
+        # Required nominal per kaki dan total modal minimal yang dibutuhkan pada leverage 2x
+        required_leg = max(spot_cost_min, perp_cost_min) + 0.10
+        required_capital = required_leg * (1.0 + (1.0 / min(2, settings.LEVERAGE)))
+
+        return {
+            "spot_cost_min": spot_cost_min,
+            "perp_cost_min": perp_cost_min,
+            "required_leg_usdt": required_leg,
+            "required_min_capital_usdt": round(required_capital, 2)
+        }
+
+    async def fetch_realized_funding_fee(self, base_asset: str, since_timestamp_ms: Optional[int] = None) -> float:
+        """
+        Mengambil total pemasukan riil funding fee yang dibayarkan oleh exchange ke akun
+        berdasarkan riwayat tagihan ledger Bitget (/api/v2/mix/account/bill).
+        """
+        if settings.DRY_RUN:
+            return 0.0
+        try:
+            params = {
+                "productType": "USDT-FUTURES",
+                "symbol": f"{base_asset.upper()}USDT",
+                "pageSize": "50"
+            }
+            if since_timestamp_ms:
+                params["startTime"] = str(since_timestamp_ms)
+
+            res = await self.client.privateMixGetV2MixAccountBill(params)
+            bills = res.get("data", {}).get("bills", [])
+            total_funding = 0.0
+            for b in bills:
+                b_type = str(b.get("businessType", "")).lower()
+                if "contract_settle_fee" in b_type or "funding" in b_type:
+                    amt = float(b.get("amount", 0.0) or 0.0)
+                    total_funding += amt
+            return round(total_funding, 6)
+        except Exception as e:
+            log.debug(f"Gagal mengambil funding fee ledger untuk {base_asset}: {e}")
+            return 0.0
+
+    async def update_position_live_pnl(self, pos: Any) -> Any:
+        """
+        Memperbarui status PnL riil (Spot Unrealized, Futures Unrealized, Realized Funding, Net PnL, dan status BEP).
+        """
+        if not pos or pos.status != "OPEN":
+            return pos
+
+        try:
+            # Ambil harga terkini Spot dan Perp
+            spot_ticker = await self.client.fetch_ticker(pos.spot_leg.symbol)
+            perp_ticker = await self.client.fetch_ticker(pos.perp_leg.symbol)
+
+            spot_curr_p = float(spot_ticker.get("bid") or spot_ticker.get("last") or pos.spot_leg.entry_price)
+            perp_curr_p = float(perp_ticker.get("ask") or perp_ticker.get("last") or pos.perp_leg.entry_price)
+
+            pos.spot_leg.current_price = spot_curr_p
+            pos.perp_leg.current_price = perp_curr_p
+
+            # Hitung Unrealized PnL Kaki Spot: Long = (now - entry) * qty
+            spot_pnl = (spot_curr_p - pos.spot_leg.entry_price) * pos.spot_leg.amount
+            pos.spot_leg.unrealized_pnl = round(spot_pnl, 4)
+
+            # Hitung Unrealized PnL Kaki Perp: Short = (entry - now) * qty
+            perp_pnl = (pos.perp_leg.entry_price - perp_curr_p) * pos.perp_leg.amount
+            pos.perp_leg.unrealized_pnl = round(perp_pnl, 4)
+
+            total_unrealized = spot_pnl + perp_pnl
+            pos.unrealized_pnl_usdt = round(total_unrealized, 4)
+
+            # Ambil Realized Funding Fee dari Ledger jika live
+            entry_ts_ms = int(pos.entry_time.timestamp() * 1000)
+            real_funding = await self.fetch_realized_funding_fee(pos.base_asset, since_timestamp_ms=entry_ts_ms)
+            if real_funding != 0.0:
+                pos.realized_funding_usdt = real_funding
+                pos.cumulative_funding_received = real_funding
+
+            # Estimasi biaya penutupan (exit taker fees: Spot 0.1%, Futures 0.06%)
+            est_exit_fees = (pos.spot_leg.amount * spot_curr_p * 0.0010) + (pos.perp_leg.amount * perp_curr_p * 0.0006)
+            total_roundtrip_fees = pos.total_fees_paid + est_exit_fees
+
+            # Net PnL Bersih = Unrealized PnL + Realized Funding Fee - Total Biaya Transaksi Round-Trip
+            net_pnl = pos.unrealized_pnl_usdt + pos.cumulative_funding_received - total_roundtrip_fees
+            pos.net_pnl_usdt = round(net_pnl, 4)
+
+            # Status BEP tercapai jika Net PnL > 0 (Funding fee riil sudah melampaui seluruh biaya round-trip)
+            pos.is_bep_reached = (pos.net_pnl_usdt > 0.0)
+
+        except Exception as e:
+            log.debug(f"Gagal update live PnL posisi {pos.base_asset}: {e}")
+
+        return pos
 
     async def set_leverage_for_symbol(self, perp_symbol: str, leverage: int = settings.LEVERAGE):
         """Mengatur leverage untuk posisi futures dan memastikan position mode satu arah (one_way_mode)."""

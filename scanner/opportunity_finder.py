@@ -97,9 +97,17 @@ class OpportunityFinder:
             is_eligible = eval_result["is_eligible"]
             rejection_reason = eval_result["rejection_reason"]
 
-            # Cek apakah modal mencukupi batas minimum order exchange
+            # Cek apakah modal mencukupi batas minimum order exchange (Token size & USDT notional)
             effective_leverage = min(2, settings.LEVERAGE)
             leg_nominal = target_nominal_usdt / (1.0 + (1.0 / effective_leverage))
+            
+            min_cost_info = self.client.get_min_order_cost(spot_symbol, perp_symbol)
+            if is_eligible and target_nominal_usdt < min_cost_info["required_min_capital_usdt"]:
+                is_eligible = False
+                rejection_reason = (
+                    f"Modal (${target_nominal_usdt:.2f}) < Syarat Min Capital Exchange (${min_cost_info['required_min_capital_usdt']:.2f} USDT)"
+                )
+
             aligned_qty = self.client.align_quantity(
                 spot_symbol=spot_symbol,
                 perp_symbol=perp_symbol,
@@ -108,7 +116,10 @@ class OpportunityFinder:
             )
             if is_eligible and aligned_qty <= 0:
                 is_eligible = False
-                rejection_reason = f"Modal per leg (${leg_nominal:.1f}) di bawah minimum lot size exchange"
+                rejection_reason = (
+                    f"Nominal kaki (${leg_nominal:.2f}) di bawah batas minimal order "
+                    f"(Futures Min: ${min_cost_info['perp_cost_min']:.2f} USDT)"
+                )
 
             if is_eligible:
                 if spot_volume < settings.MIN_24H_VOLUME_USDT or perp_volume < settings.MIN_24H_VOLUME_USDT:

@@ -110,10 +110,23 @@ class AutoRebalancer:
             now = datetime.utcnow()
             holding_hours = (now - pos.entry_time).total_seconds() / 3600.0
 
+            # Sinkronisasi status PnL riil dan funding fee dari ledger
+            await self.client.update_position_live_pnl(pos)
+
             # Syarat rotasi:
-            # 1. Sudah di-hold minimal jam holding yang ditentukan (misal 16 jam) agar biaya transaksi sempat terbayar
-            # 2. Keunggulan APY pasangan baru melampaui ambang batas MIN_ROTATION_APY_DIFF
+            # 1. Sudah di-hold minimal jam holding yang ditentukan (misal 16 jam)
+            # 2. Posisi HARUS SUDAH BEP (Net PnL > 0) agar tidak terjadi fee churn
+            # 3. Keunggulan APY pasangan baru melampaui ambang batas MIN_ROTATION_APY_DIFF
             if holding_hours >= settings.MIN_HOLDING_HOURS_BEFORE_ROTATION:
+                if pos.net_pnl_usdt <= 0.0 and not pos.is_bep_reached:
+                    log.info(
+                        f"⏳ [Rotasi Ditunda] {pos.base_asset} belum mencapai BEP "
+                        f"(Net PnL: ${pos.net_pnl_usdt:+.4f} | Real Funding: +${pos.realized_funding_usdt:.4f} | "
+                        f"Unrealized PnL: ${pos.unrealized_pnl_usdt:+.4f}). "
+                        f"Menunggu akumulasi funding fee menutupi trading fee sebelum rotasi."
+                    )
+                    continue
+
                 # Perkirakan current net yield dari posisi lama
                 old_rate = pos.perp_leg.current_price  # fallback
                 # Ambil funding rate terkini koin lama

@@ -18,6 +18,8 @@ ENV/
 *.log
 bot.log
 tests/test_compounding_state.json
+data/test_*.json
+scratch/
 
 # IDE & OS files
 .vscode/

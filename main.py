@@ -124,14 +124,14 @@ def display_opportunities(opportunities, top_n: int = 10):
     console.print(table)
 
 def display_active_positions():
-    """Menampilkan tabel posisi aktif saat ini."""
+    """Menampilkan tabel posisi aktif saat ini dengan pemantauan riil Funding Fee, Net PnL, dan status BEP."""
     active_positions = position_manager.get_active_positions()
     if not active_positions:
         console.print("[italic dim]Belum ada posisi Delta-Neutral yang aktif saat ini.[/italic dim]\n")
         return
 
     table = Table(
-        title=f"Posisi Delta-Neutral Aktif ({len(active_positions)})",
+        title=f"Posisi Delta-Neutral Aktif ({len(active_positions)}) - Status BEP & Net PnL Riil",
         box=box.HEAVY_EDGE,
         header_style="bold cyan"
     )
@@ -139,22 +139,30 @@ def display_active_positions():
     table.add_column("ID Posisi", style="dim", justify="left")
     table.add_column("Koin", style="bold yellow", justify="left")
     table.add_column("Kuantitas", style="white", justify="right")
-    table.add_column("Spot Entry / Now", style="green", justify="right")
-    table.add_column("Perp Entry / Now", style="magenta", justify="right")
-    table.add_column("Net Delta", style="bright_blue", justify="right")
-    table.add_column("Funding Diputar", style="bold green", justify="right")
+    table.add_column("Spot (Entry/Now)", style="green", justify="right")
+    table.add_column("Perp (Entry/Now)", style="magenta", justify="right")
+    table.add_column("Real Funding", style="bold green", justify="right")
+    table.add_column("Unrealized PnL", style="white", justify="right")
+    table.add_column("Net PnL", style="bold white", justify="right")
+    table.add_column("Status BEP", justify="center")
     table.add_column("Margin Ratio", style="bold red", justify="right")
     table.add_column("Status", style="bold green", justify="center")
 
     for pos in active_positions:
+        pnl_color = "green" if pos.net_pnl_usdt >= 0 else "red"
+        unreal_color = "green" if pos.unrealized_pnl_usdt >= 0 else "yellow"
+        bep_badge = "[bold green]✅ BEP Tercapai[/bold green]" if pos.is_bep_reached else f"[bold yellow]⏳ Menuju BEP ({pos.net_pnl_usdt:+.4f})[/bold yellow]"
+
         table.add_row(
             pos.position_id,
             pos.base_asset,
             f"{pos.spot_leg.amount:.4f}",
             f"${pos.spot_leg.entry_price:,.2f} / ${pos.spot_leg.current_price:,.2f}",
             f"${pos.perp_leg.entry_price:,.2f} / ${pos.perp_leg.current_price:,.2f}",
-            f"{pos.net_delta:+.6f}",
             f"+${pos.cumulative_funding_received:.4f}",
+            f"[{unreal_color}]${pos.unrealized_pnl_usdt:+.4f}[/{unreal_color}]",
+            f"[{pnl_color}]${pos.net_pnl_usdt:+.4f}[/{pnl_color}]",
+            bep_badge,
             f"{pos.current_margin_ratio:.1%}",
             pos.status
         )
