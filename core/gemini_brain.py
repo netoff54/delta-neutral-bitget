@@ -30,7 +30,7 @@ class GeminiBrain:
        Memproyeksikan estimasi dividen funding fee berikutnya sesuai interval dinamis koin (1h/4h/8h).
     """
 
-    FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-flash-latest", "gemini-3.7-flash"]
+    FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash"]
 
     def __init__(
         self,
