@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: delta-neutral-bot
+    runtime: docker
+    plan: free
+    region: singapore
