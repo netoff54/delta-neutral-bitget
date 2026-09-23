@@ -65,8 +65,8 @@ class OrderExecutor:
             log.warning(f"Saldo USDT cair di dompet trading (${free_liquid_usdt:.2f}) < Kebutuhan (${allocated_capital_usdt:.2f}).")
             return None
 
-        # Pastikan leverage tidak melebihi 2x
-        effective_leverage = min(2, settings.LEVERAGE)
+        # Leverage sesuai pengaturan bot (Maksimal 1x)
+        effective_leverage = max(1, settings.LEVERAGE)
 
         # Alokasi nominal per leg agar total (Spot + Margin Perp) pas dengan allocated_capital_usdt:
         # Total Capital = Spot_Cost + Perp_Margin = Spot_Nominal * (1.0 + 1.0 / effective_leverage)

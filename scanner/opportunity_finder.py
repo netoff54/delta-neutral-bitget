@@ -101,7 +101,7 @@ class OpportunityFinder:
             rejection_reason = eval_result["rejection_reason"]
 
             # Cek apakah modal mencukupi batas minimum order exchange (Token size & USDT notional)
-            effective_leverage = min(2, settings.LEVERAGE)
+            effective_leverage = max(1, settings.LEVERAGE)
             leg_nominal = target_nominal_usdt / (1.0 + (1.0 / effective_leverage))
             
             min_cost_info = self.client.get_min_order_cost(spot_symbol, perp_symbol)

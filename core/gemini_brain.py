@@ -314,7 +314,7 @@ class GeminiBrain:
         prompt = (
             f"Anda adalah Chief Investment Officer (CIO) Delta-Neutral Quantitative Hedge Fund Bitget.\n\n"
             f"{knowledge_context}\n\n"
-            f"Modal Tersedia: ${capital_usdt:.2f} USDT (Leverage 2x)\n"
+            f"Modal Tersedia: ${capital_usdt:.2f} USDT (Leverage {settings.LEVERAGE}x)\n"
             f"Kandidat Pasar Teratas (Dilengkapi Analisis Data Asli Bitget 30 Hari & Biaya Taker):\n"
             + "\n".join(candidates_summary) + "\n\n"
             f"Prinsip Keputusan Delta-Neutral Profesional:\n"

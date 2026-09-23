@@ -44,22 +44,17 @@ async def test_bitget_earn_isolation():
     print("✅ Percobaan alokasi melebihi saldo trading cair ($500.00) DITOLAK KERAS untuk melindungi Bitget Earn")
 
 async def test_leg_sizing_and_leverage_math():
-    print("\n=== TEST 3: Delta Neutral Leg Sizing with Leverage 2x ===")
+    print("\n=== TEST 3: Delta Neutral Leg Sizing with Leverage 1x & 2x ===")
     allocated_capital = 150.0 * 0.98  # $147.00
-    effective_leverage = 2
     
-    # Formula: leg_nominal = Total / (1 + 1/L)
-    leg_nominal = allocated_capital / (1.0 + (1.0 / effective_leverage))
-    spot_cost = leg_nominal
-    perp_margin = leg_nominal / effective_leverage
-    total_used = spot_cost + perp_margin
-    
-    assert abs(total_used - allocated_capital) < 1e-5, f"Total used {total_used} != {allocated_capital}"
-    print(f"✅ Modal Total: ${allocated_capital:.2f} USDT")
-    print(f"   -> Spot Long Leg: ${spot_cost:.2f} USDT")
-    print(f"   -> Perp Short Leg: ${leg_nominal:.2f} Notional (Margin: ${perp_margin:.2f} USDT @ 2x)")
-    print(f"   -> Total Modal Terpakai: ${total_used:.2f} USDT")
-    print(f"   -> Net Delta = Spot Long (${spot_cost:.2f}) - Perp Short (${leg_nominal:.2f}) = 0.00 (Hedging Sempurna)")
+    for lev in [1, 2]:
+        # Formula: leg_nominal = Total / (1 + 1/L)
+        leg_nominal = allocated_capital / (1.0 + (1.0 / lev))
+        spot_cost = leg_nominal
+        perp_margin = leg_nominal / lev
+        total_used = spot_cost + perp_margin
+        assert abs(total_used - allocated_capital) < 1e-5, f"Total used {total_used} != {allocated_capital} for {lev}x"
+        print(f"✅ Leverage {lev}x: Total ${allocated_capital:.2f} -> Spot ${spot_cost:.2f} + Margin ${perp_margin:.2f} = ${total_used:.2f} (Net Delta = 0)")
 
 async def test_wallet_balancing():
     print("\n=== TEST 4: Automatic Internal Wallet Balancing (Spot <-> Swap) ===")

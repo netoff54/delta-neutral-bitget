@@ -423,9 +423,9 @@ class BitgetClient:
         perp_cost_min = max(5.0, perp_cost_min)
         spot_cost_min = max(1.0, spot_cost_min)
 
-        # Required nominal per kaki dan total modal minimal yang dibutuhkan pada leverage 2x
+        # Required nominal per kaki dan total modal minimal yang dibutuhkan sesuai leverage
         required_leg = max(spot_cost_min, perp_cost_min) + 0.10
-        required_capital = required_leg * (1.0 + (1.0 / min(2, settings.LEVERAGE)))
+        required_capital = required_leg * (1.0 + (1.0 / max(1, settings.LEVERAGE)))
 
         return {
             "spot_cost_min": spot_cost_min,

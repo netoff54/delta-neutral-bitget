@@ -29,7 +29,7 @@ class BotSettings(BaseSettings):
     MAX_CAPITAL_PER_POSITION_USDT: Optional[float] = Field(default=None, description="Manual override alokasi per posisi (None = alokasi dinamis seluruh modal cair)")
     INITIAL_SEED_CAPITAL_USDT: float = Field(default=20.0, description="Modal awal fallback")
     TOTAL_MAX_CAPITAL_USDT: Optional[float] = Field(default=None, description="Batas atas total modal (opsional)")
-    LEVERAGE: int = Field(default=2, ge=1, le=2, description="Futures short leverage (Maksimal 2x)")
+    LEVERAGE: int = Field(default=1, ge=1, le=2, description="Futures short leverage (Maksimal 1x)")
     MIN_24H_VOLUME_USDT: float = Field(default=500000.0, description="Minimum 24h volume for liquidity check ($500k)")
 
     # Fee Structure
