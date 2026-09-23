@@ -53,20 +53,49 @@ class GeminiBrain:
         self.load_memory()
 
     def load_memory(self):
-        """Memuat riwayat pembelajaran dan akumulasi pengalaman dari disk."""
-        if not self.memory_path.exists():
-            self.memory = []
-            return
-        try:
-            with open(self.memory_path, "r", encoding="utf-8") as f:
-                self.memory = json.load(f)
-            if self.memory:
-                last = self.memory[-1]
-                self.latest_insight = last.get("insight", self.latest_insight)
-            log.info(f"[GeminiBrain] Berhasil memuat {len(self.memory)} pengalaman pembelajaran AGI dari disk.")
-        except Exception as e:
-            log.warning(f"[GeminiBrain] Gagal memuat memori AI: {e}")
-            self.memory = []
+        """Memuat riwayat pembelajaran dan akumulasi pengalaman dari disk atau database."""
+        loaded_from_disk = False
+        if self.memory_path.exists():
+            try:
+                with open(self.memory_path, "r", encoding="utf-8") as f:
+                    self.memory = json.load(f)
+                if self.memory:
+                    loaded_from_disk = True
+                    log.info(f"[GeminiBrain] Berhasil memuat {len(self.memory)} pengalaman pembelajaran AGI dari disk.")
+            except Exception as e:
+                log.warning(f"[GeminiBrain] Gagal memuat memori AI dari disk: {e}")
+                self.memory = []
+
+        # Fallback ke database jika file di container cloud kosong (Render redeployment / restart)
+        if not loaded_from_disk or not self.memory:
+            try:
+                from core.database import db
+                db_mem = db.get_agentic_memory(limit=150)
+                if db_mem:
+                    self.memory = [
+                        {
+                            "timestamp": m.get("timestamp_utc"),
+                            "event_type": m.get("event_type"),
+                            "base_asset": m.get("base_asset"),
+                            "current_funding_rate": m.get("funding_rate"),
+                            "harvest_profit_usdt": m.get("harvest_usdt"),
+                            "net_pnl_usdt": m.get("net_pnl_usdt"),
+                            "holding_hours": m.get("holding_hours"),
+                            "was_bep_reached": bool(m.get("was_bep_reached")),
+                            "decision": m.get("ai_decision"),
+                            "lesson_learned": m.get("lesson_learned"),
+                            "tactical_rule": m.get("tactical_rule"),
+                            "insight": m.get("lesson_learned") or m.get("ai_decision")
+                        }
+                        for m in reversed(db_mem)
+                    ]
+                    log.info(f"🧠 [GeminiBrain] Berhasil memulihkan {len(self.memory)} memori evolusi AGI langsung dari Database!")
+            except Exception as dbe:
+                log.debug(f"[GeminiBrain] Database memory recovery notice: {dbe}")
+
+        if self.memory:
+            last = self.memory[-1]
+            self.latest_insight = last.get("insight") or last.get("lesson_learned") or self.latest_insight
 
     def save_memory(self):
         """Menyimpan akumulasi pengalaman AGI ke disk."""
@@ -107,6 +136,24 @@ class GeminiBrain:
                 pnl = m.get("net_pnl_usdt", 0.0)
                 lesson = m.get("lesson_learned", m.get("insight", ""))[:120]
                 context_lines.append(f"{idx}. [{coin}] Rate: {rate:+.4f}%, Profit: +${profit:.4f}, Net PnL: ${pnl:+.4f} | Catatan: {lesson}")
+
+        # Tambahkan Telemetri Saldo Gabungan Multi-Market dari Database
+        try:
+            from core.database import db
+            latest_bal = db.get_latest_combined_balance()
+            growth_stats = db.get_equity_growth_stats(days=7)
+            if latest_bal:
+                context_lines.append(
+                    f"\nStatus Saldo Gabungan Portofolio (Seluruh Pasar Bitget):\n"
+                    f"- Total Kekayaan Bersih (Net Worth): ${latest_bal.get('total_combined_equity_usdt', 0.0):.2f} USDT\n"
+                    f"  * Dompet Spot: ${latest_bal.get('spot_equity_usdt', 0.0):.2f} USDT\n"
+                    f"  * Dompet Futures: ${latest_bal.get('futures_equity_usdt', 0.0):.2f} USDT (Margin Digunakan: ${latest_bal.get('futures_margin_used_usdt', 0.0):.2f})\n"
+                    f"  * Dompet OTC: ${latest_bal.get('otc_funding_equity_usdt', 0.0):.2f} USDT | Earn: 100% Aman Terlindungi\n"
+                    f"- Stabilitas Delta-Neutral 7D: {growth_stats.get('stability_rating', 'STABLE')} "
+                    f"(Perubahan Net Worth: {growth_stats.get('growth_pct', 0.0):+.2f}% / ${growth_stats.get('net_change_usdt', 0.0):+.4f} USDT)"
+                )
+        except Exception:
+            pass
 
         return "\n".join(context_lines) if context_lines else "Belum ada riwayat pembelajaran sebelumnya. Ini adalah siklus awal."
 

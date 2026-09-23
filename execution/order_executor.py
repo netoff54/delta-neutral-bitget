@@ -14,6 +14,7 @@ from core.models import (
 )
 from core.bitget_client import BitgetClient, bitget_client
 from execution.position_manager import PositionManager, position_manager
+from core.database import db
 
 class OrderExecutor:
     """
@@ -173,6 +174,35 @@ class OrderExecutor:
         net_delta = round(spot_res.filled_amount - perp_res.filled_amount, 8)
         total_fees = spot_res.fee_amount + perp_res.fee_amount
 
+        # Simpan jejak eksekusi order ke database
+        try:
+            db.record_order_execution(
+                order_id=spot_res.order_id or f"spot-{uuid.uuid4().hex[:8]}",
+                position_id=pos_id,
+                market_type="spot",
+                symbol=opportunity.spot_symbol,
+                side="buy",
+                requested_amount=aligned_qty,
+                filled_amount=spot_res.filled_amount,
+                price=spot_res.avg_price,
+                fee_paid=spot_res.fee_amount,
+                status="FILLED"
+            )
+            db.record_order_execution(
+                order_id=perp_res.order_id or f"perp-{uuid.uuid4().hex[:8]}",
+                position_id=pos_id,
+                market_type="perp",
+                symbol=opportunity.perp_symbol,
+                side="short",
+                requested_amount=perp_qty,
+                filled_amount=perp_res.filled_amount,
+                price=perp_res.avg_price,
+                fee_paid=perp_res.fee_amount,
+                status="FILLED"
+            )
+        except Exception as dbe:
+            log.debug(f"[OrderExecutor] Gagal menyimpan order ke database: {dbe}")
+
         spot_leg = PositionLeg(
             market_type="spot",
             symbol=opportunity.spot_symbol,
@@ -269,6 +299,35 @@ class OrderExecutor:
             amount=actual_spot_qty,
             order_type="market"
         )
+
+        # Simpan jejak order penutupan ke database
+        try:
+            db.record_order_execution(
+                order_id=perp_close_res.order_id or f"perp-close-{uuid.uuid4().hex[:8]}",
+                position_id=pos.position_id,
+                market_type="perp",
+                symbol=pos.perp_leg.symbol,
+                side="buy_to_close",
+                requested_amount=pos.perp_leg.amount,
+                filled_amount=perp_close_res.filled_amount,
+                price=perp_close_res.avg_price,
+                fee_paid=perp_close_res.fee_amount,
+                status="FILLED"
+            )
+            db.record_order_execution(
+                order_id=spot_close_res.order_id or f"spot-sell-{uuid.uuid4().hex[:8]}",
+                position_id=pos.position_id,
+                market_type="spot",
+                symbol=pos.spot_leg.symbol,
+                side="sell",
+                requested_amount=actual_spot_qty,
+                filled_amount=spot_close_res.filled_amount,
+                price=spot_close_res.avg_price,
+                fee_paid=spot_close_res.fee_amount,
+                status="FILLED"
+            )
+        except Exception as dbe:
+            log.debug(f"[OrderExecutor] Gagal menyimpan order penutupan ke DB: {dbe}")
 
         # Update status
         pos.status = "CLOSED"

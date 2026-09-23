@@ -4,6 +4,7 @@ import sys
 import os
 import gc
 from datetime import datetime, timezone
+from typing import Dict, Any
 
 if sys.platform == "win32":
     try:
@@ -42,6 +43,32 @@ def print_banner(dry_run: bool):
         title="[bold green]Delta-Neutral Compounding Engine[/bold green]",
         subtitle="[dim]Powered by CCXT & Bitget V2 API[/dim]",
         box=box.DOUBLE
+    ))
+
+def display_combined_balance(combined: Dict[str, Any]):
+    """Menampilkan status saldo gabungan multi-market (Spot, Futures, OTC, Earn) secara transparan."""
+    tot = combined.get("total_combined_equity_usdt", 0.0)
+    spot = combined.get("spot", {})
+    futures = combined.get("futures", {})
+    otc = combined.get("otc", {})
+    earn = combined.get("earn", {})
+
+    top_tokens = []
+    for h in spot.get("holdings", [])[:3]:
+        if h.get("coin") != "USDT":
+            top_tokens.append(f"{h['coin']}: {h['amount']} (${h['value_usdt']:.2f})")
+    tokens_str = f" [dim]({', '.join(top_tokens)})[/dim]" if top_tokens else ""
+
+    console.print(Panel(
+        f"[bold cyan]🌐 TOTAL KEKAYAAN BERSIH (COMBINED NET WORTH):[/bold cyan] [bold green]${tot:,.2f} USDT[/bold green]\n"
+        f"  • [bold yellow]Pasar Spot:[/bold yellow] [green]${spot.get('equity_usdt', 0.0):,.2f} USDT[/green] "
+        f"[dim](Kas Bebas: ${spot.get('free_usdt', 0.0):,.2f}{tokens_str})[/dim]\n"
+        f"  • [bold magenta]Pasar Futures:[/bold magenta] [green]${futures.get('equity_usdt', 0.0):,.2f} USDT[/green] "
+        f"[dim](Bebas: ${futures.get('free_usdt', 0.0):,.2f} | Margin Aktif: ${futures.get('margin_used_usdt', 0.0):,.2f} | uPnL: ${futures.get('unrealized_pnl_usdt', 0.0):+.4f})[/dim]\n"
+        f"  • [bold blue]Akun OTC/Pendanaan:[/bold blue] [green]${otc.get('equity_usdt', 0.0):,.2f} USDT[/green] | "
+        f"[bold yellow]Bitget Earn:[/bold yellow] [green]${earn.get('equity_usdt', 0.0):,.2f} USDT[/green] [bold green](100% Terisolasi)[/bold green]",
+        title="[bold green]Multi-Market Combined Portfolio & Equity Intelligence[/bold green]",
+        box=box.ROUNDED
     ))
 
 def display_compounding_pool(total_liquid_usdt: float, spot_free: float = 0.0, swap_free: float = 0.0, otc_free: float = 0.0):
@@ -202,30 +229,91 @@ def display_active_positions():
 
     console.print(table)
 
+from core.database import db
+
 async def start_health_check_server():
-    """Server HTTP mini untuk Render/Cloud Health Check agar bot terdeteksi LIVE dan tidak tidur."""
+    """Server HTTP mini untuk Render/Cloud Health Check, Riwayat Database, dan Memori Agentic."""
     try:
         from aiohttp import web
         app = web.Application()
 
         async def handle_health(request):
-            active_cnt = len(position_manager.get_active_positions())
+            active_positions = position_manager.get_active_positions()
+            pos_summary = [
+                {
+                    "symbol": p.base_asset,
+                    "spot_qty": p.spot_leg.amount,
+                    "perp_contracts": p.perp_leg.amount,
+                    "unrealized_pnl": p.unrealized_pnl_usdt,
+                    "funding_received": p.cumulative_funding_received,
+                    "net_delta": p.net_delta,
+                    "interval_hours": p.funding_interval_hours,
+                }
+                for p in active_positions
+            ]
             return web.json_response({
                 "status": "healthy",
                 "service": "Delta-Neutral Bitget Autonomous Agent",
-                "active_positions": active_cnt,
+                "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+                "active_positions": len(active_positions),
+                "positions": pos_summary,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+
+        async def handle_history(request):
+            """Endpoint untuk melihat seluruh riwayat posisi, order, dan panen funding langsung dari database tanpa memanggil Bitget API."""
+            positions = db.get_positions_history(limit=20)
+            orders = db.get_orders_history(limit=20)
+            harvests = db.get_harvest_history(limit=20)
+            total_profit = db.get_total_harvested_profit()
+            return web.json_response({
+                "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+                "total_harvested_profit_usdt": total_profit,
+                "positions_count": len(positions),
+                "recent_positions": positions,
+                "recent_orders": orders,
+                "recent_harvests": harvests,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+
+        async def handle_agentic(request):
+            """Endpoint untuk melihat akumulasi memori, aturan taktis, dan reputasi koin Gemini AI."""
+            mem = db.get_agentic_memory(limit=20)
+            reps = db.get_all_pair_reputations()
+            return web.json_response({
+                "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+                "total_memories_stored": len(mem),
+                "pair_reputations": reps,
+                "recent_agentic_memories": mem,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+
+        async def handle_balance(request):
+            """Endpoint untuk melihat saldo gabungan multi-market (Spot, Futures, OTC, Earn) dan riwayat pertumbuhannya dari database."""
+            latest = db.get_latest_combined_balance()
+            history = db.get_combined_balance_history(limit=20)
+            growth = db.get_equity_growth_stats(days=7)
+            return web.json_response({
+                "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+                "latest_combined_balance": latest,
+                "equity_growth_stats_7d": growth,
+                "history_count": len(history),
+                "recent_history": history,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
 
         app.router.add_get("/", handle_health)
         app.router.add_get("/health", handle_health)
+        app.router.add_get("/history", handle_history)
+        app.router.add_get("/agentic", handle_agentic)
+        app.router.add_get("/balance", handle_balance)
 
         port = int(os.getenv("PORT", "10000"))
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", port)
         await site.start()
-        log.info(f"🌐 [Health Server] Mini HTTP server aktif di port {port} (Render Cloud health check).")
+        log.info(f"🌐 [Health Server] Mini HTTP server aktif di port {port} (/health, /history, /agentic, /balance).")
         return runner
     except Exception as e:
         log.warning(f"Tidak dapat memulai health check server: {e}")
@@ -239,6 +327,9 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
     # 2. Inisialisasi koneksi exchange
     await bitget_client.initialize()
 
+    # 2.1. Sinkronisasi posisi aktif langsung dari Bitget (Auto-Discovery Cloud/Restart)
+    await position_manager.sync_active_positions_from_exchange(bitget_client)
+
     try:
         while True:
             try:
@@ -247,14 +338,39 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
                 print_banner(settings.DRY_RUN)
                 console.print(f"[dim]Waktu Pemeriksaan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
 
-                # 0. Ambil saldo akun dan tampilkan Portfolio Pool & Proteksi Earn
+                # 0. Rekonsiliasi exchange & ambil saldo akun dan tampilkan Portfolio Pool & Proteksi Earn
+                await position_manager.sync_active_positions_from_exchange(bitget_client)
                 bal = await bitget_client.fetch_balance()
                 total_bal = float(bal.get("total", {}).get("USDT", 0.0) or bal.get("USDT", {}).get("total", 0.0) or (settings.TOTAL_MAX_CAPITAL_USDT or 0.0))
                 spot_free = float(bal.get("spot_free", 0.0))
                 swap_free = float(bal.get("swap_free", 0.0))
                 otc_free = float(bal.get("otc_free", 0.0))
                 display_compounding_pool(total_bal, spot_free, swap_free, otc_free)
+
+                # 0.1 Ambil dan tampilkan saldo gabungan multi-market (Spot tokens bernilai USDT, Futures, OTC, Earn)
+                try:
+                    combined_bal = await bitget_client.fetch_all_combined_balances()
+                    display_combined_balance(combined_bal)
+                    db.record_combined_balance(combined_bal, active_positions_count=len(position_manager.get_active_positions()))
+                except Exception as cbe:
+                    log.warning(f"[MainLoop] Notice perolehan saldo gabungan: {cbe}")
+
                 display_ai_brain_status()
+
+                # Rekam snapshot ekuitas & saldo portofolio ke database
+                try:
+                    summary = compounding_manager.get_summary()
+                    db.record_portfolio_snapshot(
+                        total_liquid_usdt=total_bal,
+                        spot_free_usdt=spot_free,
+                        swap_free_usdt=swap_free,
+                        otc_free_usdt=otc_free,
+                        active_positions_count=len(position_manager.get_active_positions()),
+                        compounded_capital_usdt=summary.current_compounded_capital,
+                        total_profit_harvested_usdt=summary.total_profit_compounded
+                    )
+                except Exception as dbe:
+                    log.debug(f"[MainLoop] Portfolio snapshot record notice: {dbe}")
 
                 # Hitung modal trading dinamis yang dialokasikan (seluruh saldo cair atau manual override)
                 current_compounded_cap = manual_capital if manual_capital else compounding_manager.get_position_capital(total_bal)

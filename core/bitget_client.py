@@ -213,6 +213,155 @@ class BitgetClient:
             "otc_free": liquid.get("otc_free", 0.0)
         }
 
+    async def fetch_all_combined_balances(self) -> Dict[str, Any]:
+        """
+        Mengambil dan mengagregasi saldo gabungan menyeluruh dari SELURUH pasar Bitget:
+        1. Pasar Spot: Kas USDT bebas + seluruh aset token fisik (ARX, BTC, dsb) dikonversi ke nilai USDT.
+        2. Pasar Futures: Total ekuitas (saldo kas bebas + margin terkunci pada posisi + unrealized PnL).
+        3. Akun OTC / Pendanaan (Funding/P2P): Saldo USDT di dompet pendanaan internal.
+        4. Akun Earn / Tabungan (Savings/Staking): Pengecekan read-only (100% terlindungi & tidak disentuh).
+        5. Total Saldo Gabungan (Net Worth): Nilai bersih seluruh portofolio dalam USDT.
+        """
+        from datetime import timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if settings.DRY_RUN:
+            sim = settings.SIMULATED_BALANCE_USDT
+            otc = float(settings.SIMULATED_OTC_BALANCE_USDT if settings.INCLUDE_OTC_BALANCE else 0.0)
+            return {
+                "total_combined_equity_usdt": round(sim + otc, 2),
+                "spot": {
+                    "equity_usdt": round(sim / 2.0, 2),
+                    "free_usdt": round(sim / 2.0, 2),
+                    "tokens_count": 1,
+                    "holdings": [{"coin": "USDT", "amount": round(sim / 2.0, 2), "price": 1.0, "value_usdt": round(sim / 2.0, 2)}]
+                },
+                "futures": {
+                    "equity_usdt": round(sim / 2.0, 2),
+                    "free_usdt": round(sim / 2.0, 2),
+                    "margin_used_usdt": 0.0,
+                    "unrealized_pnl_usdt": 0.0
+                },
+                "otc": {
+                    "equity_usdt": round(otc, 2),
+                    "free_usdt": round(otc, 2)
+                },
+                "earn": {
+                    "equity_usdt": 0.0,
+                    "status": "100% PROTECTED & UNTOUCHED"
+                },
+                "timestamp_utc": now_iso
+            }
+
+        try:
+            # 1. Pasar Spot: Ambil seluruh koin dan konversi ke USDT
+            spot_bal = await self.client.fetch_balance({"type": "spot"})
+            spot_totals = spot_bal.get("total", {})
+            spot_free_usdt = float(spot_bal.get("free", {}).get("USDT", 0.0) or spot_bal.get("USDT", {}).get("free", 0.0) or 0.0)
+
+            spot_tickers = await self.fetch_tickers_by_type("spot")
+            spot_equity = 0.0
+            spot_holdings = []
+
+            for coin, amt in spot_totals.items():
+                amt = float(amt or 0)
+                if amt <= 0:
+                    continue
+                if coin == "USDT":
+                    spot_equity += amt
+                    spot_holdings.append({
+                        "coin": "USDT",
+                        "amount": round(amt, 6),
+                        "price": 1.0,
+                        "value_usdt": round(amt, 4)
+                    })
+                else:
+                    sym = f"{coin}/USDT"
+                    ticker = spot_tickers.get(sym, {})
+                    price = float(ticker.get("last") or ticker.get("close") or 0.0)
+                    val = amt * price
+                    if val > 0.001 or amt > 0.01:
+                        spot_equity += val
+                        spot_holdings.append({
+                            "coin": coin,
+                            "amount": round(amt, 6),
+                            "price": round(price, 6),
+                            "value_usdt": round(val, 4)
+                        })
+
+            spot_holdings.sort(key=lambda x: x["value_usdt"], reverse=True)
+
+            # 2. Pasar Futures: Total ekuitas dompet futures
+            swap_bal = await self.client.fetch_balance({"type": "swap"})
+            swap_totals = swap_bal.get("total", {})
+            futures_equity = float(swap_totals.get("USDT", 0.0) or 0.0)
+            futures_free = float(swap_bal.get("free", {}).get("USDT", 0.0) or 0.0)
+            futures_used = float(swap_bal.get("used", {}).get("USDT", 0.0) or 0.0)
+
+            futures_positions = await self.fetch_positions()
+            total_upnl = sum(float(p.get("unrealizedPnl", 0.0) or 0.0) for p in futures_positions)
+
+            # 3. Akun OTC / Pendanaan
+            otc_free = await self.fetch_otc_balance()
+
+            # 4. Akun Earn / Tabungan (Read-only, 100% aman terisolasi)
+            earn_equity = 0.0
+            try:
+                if hasattr(self.client, "privateEarnGetV2EarnAccountAssets"):
+                    earn_res = await self.client.privateEarnGetV2EarnAccountAssets()
+                    earn_data = earn_res.get("data", [])
+                    if isinstance(earn_data, dict):
+                        earn_data = earn_data.get("assetList", earn_data.get("list", []))
+                    if isinstance(earn_data, list):
+                        for item in earn_data:
+                            coin = item.get("coin", "")
+                            amt = float(item.get("balance", 0.0) or item.get("total", 0.0) or item.get("amount", 0.0) or 0.0)
+                            if coin == "USDT":
+                                earn_equity += amt
+                            elif amt > 0:
+                                t = spot_tickers.get(f"{coin}/USDT", {})
+                                p = float(t.get("last") or 0.0)
+                                earn_equity += amt * p
+            except Exception as ee:
+                log.debug(f"Earn read-only check notice: {ee}")
+
+            # 5. Total Gabungan (Net Worth)
+            total_combined = spot_equity + futures_equity + otc_free + earn_equity
+
+            return {
+                "total_combined_equity_usdt": round(total_combined, 4),
+                "spot": {
+                    "equity_usdt": round(spot_equity, 4),
+                    "free_usdt": round(spot_free_usdt, 4),
+                    "tokens_count": len(spot_holdings),
+                    "holdings": spot_holdings
+                },
+                "futures": {
+                    "equity_usdt": round(futures_equity, 4),
+                    "free_usdt": round(futures_free, 4),
+                    "margin_used_usdt": round(futures_used, 4),
+                    "unrealized_pnl_usdt": round(total_upnl, 4)
+                },
+                "otc": {
+                    "equity_usdt": round(otc_free, 4),
+                    "free_usdt": round(otc_free, 4)
+                },
+                "earn": {
+                    "equity_usdt": round(earn_equity, 4),
+                    "status": "100% PROTECTED & UNTOUCHED"
+                },
+                "timestamp_utc": now_iso
+            }
+        except Exception as e:
+            log.error(f"[BitgetClient] Gagal mengambil saldo gabungan seluruh pasar: {e}")
+            return {
+                "total_combined_equity_usdt": 0.0,
+                "spot": {"equity_usdt": 0.0, "free_usdt": 0.0, "tokens_count": 0, "holdings": []},
+                "futures": {"equity_usdt": 0.0, "free_usdt": 0.0, "margin_used_usdt": 0.0, "unrealized_pnl_usdt": 0.0},
+                "otc": {"equity_usdt": 0.0, "free_usdt": 0.0},
+                "earn": {"equity_usdt": 0.0, "status": "100% PROTECTED & UNTOUCHED"},
+                "timestamp_utc": now_iso
+            }
+
     async def transfer_internal(self, from_wallet: str, to_wallet: str, amount: float) -> bool:
         """
         Transfer internal USDT dua arah antar-dompet pribadi Anda di Bitget:
@@ -350,12 +499,15 @@ class BitgetClient:
             return await self.transfer_internal(from_wallet=from_wallet, to_wallet="otc", amount=transfer_amt)
         return False
 
-    async def fetch_positions(self) -> List[Dict[str, Any]]:
+    async def fetch_positions(self, symbols: Optional[List[str]] = None, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Mengambil posisi futures terbuka saat ini."""
         if settings.DRY_RUN:
             return []
         try:
-            return await self.client.fetch_positions()
+            req_params = {"productType": "USDT-FUTURES"}
+            if params:
+                req_params.update(params)
+            return await self.client.fetch_positions(symbols=symbols, params=req_params)
         except Exception as e:
             log.error(f"Gagal mengambil posisi futures terbuka: {e}")
             return []

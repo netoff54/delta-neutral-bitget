@@ -79,4 +79,10 @@ class BotSettings(BaseSettings):
     AI_MAX_DAILY_CALLS: int = Field(default=720, description="Maksimal panggilan AI harian (48% dari kuota 1500 RPD Google)")
     AI_REALTIME_EVALUATION: bool = Field(default=True, description="Evaluasi telemetri pasar real-time setiap siklus 2 menit")
 
+    # Database Configuration (SQLite default / PostgreSQL cloud persistence)
+    DATABASE_URL: Optional[str] = Field(
+        default=None,
+        description="Database connection URL (None/sqlite://... for local SQLite, or postgresql://... for cloud PostgreSQL)"
+    )
+
 settings = BotSettings()

@@ -13,6 +13,7 @@ from risk.compounding_manager import compounding_manager
 
 from core.gemini_brain import gemini_brain
 from core.historical_store import historical_store
+from core.database import db
 
 class FundingGuard:
     """
@@ -137,6 +138,19 @@ class FundingGuard:
                     funding_rate=current_rate
                 )
 
+                try:
+                    db.record_funding_harvest(
+                        position_id=pos.position_id,
+                        base_asset=pos.base_asset,
+                        perp_symbol=pos.perp_leg.symbol,
+                        funding_rate=current_rate,
+                        interval_hours=pos_interval,
+                        payment_usdt=harvested,
+                        compounded_amount_usdt=harvested
+                    )
+                except Exception as dbe:
+                    log.debug(f"[FundingGuard] Gagal rekam harvest ke DB: {dbe}")
+
                 log.info(
                     f"💰 [Harvest Riil Ledger] Posisi {pos.base_asset} menerima funding fee: "
                     f"+${harvested:.4f} USDT (Total Terkumpul: ${pos.cumulative_funding_received:.4f} | "
@@ -170,6 +184,19 @@ class FundingGuard:
                         profit_usdt=harvested,
                         funding_rate=current_rate
                     )
+
+                    try:
+                        db.record_funding_harvest(
+                            position_id=pos.position_id,
+                            base_asset=pos.base_asset,
+                            perp_symbol=pos.perp_leg.symbol,
+                            funding_rate=current_rate,
+                            interval_hours=interval,
+                            payment_usdt=harvested,
+                            compounded_amount_usdt=harvested
+                        )
+                    except Exception as dbe:
+                        log.debug(f"[FundingGuard] Gagal rekam estimasi harvest ke DB: {dbe}")
 
                     log.info(
                         f"💰 [Harvest Estimasi] Posisi {pos.base_asset} estimasi funding fee: "
