@@ -267,8 +267,16 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
             # Bersihkan memori RAM agar hemat biaya container di cloud (Railway)
             gc.collect()
 
-            console.print(f"\n[dim]Menunggu {settings.SCAN_INTERVAL_SECONDS} detik untuk siklus berikutnya... (Tekan Ctrl+C untuk berhenti)[/dim]")
-            await asyncio.sleep(settings.SCAN_INTERVAL_SECONDS)
+            console.print(f"\n[dim]Menunggu {settings.SCAN_INTERVAL_SECONDS} detik untuk pemindaian pasar berikutnya (pemantauan posisi aktif tiap {settings.MONITOR_INTERVAL_SECONDS} detik)...[/dim]")
+            sleep_remaining = settings.SCAN_INTERVAL_SECONDS
+            monitor_interval = getattr(settings, "MONITOR_INTERVAL_SECONDS", 60)
+            while sleep_remaining > 0:
+                step = min(monitor_interval, sleep_remaining)
+                await asyncio.sleep(step)
+                sleep_remaining -= step
+                if sleep_remaining > 0 and position_manager.get_active_positions():
+                    await margin_guard.check_positions_health()
+                    await funding_guard.check_positions_funding()
 
     except asyncio.CancelledError:
         log.info("Autonomous loop dihentikan.")
