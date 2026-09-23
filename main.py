@@ -3,7 +3,7 @@ import argparse
 import sys
 import os
 import gc
-from datetime import datetime
+from datetime import datetime, timezone
 
 if sys.platform == "win32":
     try:
@@ -191,13 +191,43 @@ def display_active_positions():
 
     console.print(table)
 
+async def start_health_check_server():
+    """Server HTTP mini untuk Render/Cloud Health Check agar bot terdeteksi LIVE dan tidak tidur."""
+    try:
+        from aiohttp import web
+        app = web.Application()
+
+        async def handle_health(request):
+            active_cnt = len(position_manager.get_active_positions())
+            return web.json_response({
+                "status": "healthy",
+                "service": "Delta-Neutral Bitget Autonomous Agent",
+                "active_positions": active_cnt,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+
+        app.router.add_get("/", handle_health)
+        app.router.add_get("/health", handle_health)
+
+        port = int(os.getenv("PORT", "10000"))
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        log.info(f"🌐 [Health Server] Mini HTTP server aktif di port {port} (Render Cloud health check).")
+        return runner
+    except Exception as e:
+        log.warning(f"Tidak dapat memulai health check server: {e}")
+        return None
+
 async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
     """Loop otonom: Memindai pasar, memprediksi yield, auto-rebalance, dan memutar profit (compounding)."""
     await bitget_client.initialize()
+    health_runner = await start_health_check_server()
 
     try:
         while True:
-            if sys.stdout.isatty() and not os.getenv("RAILWAY_ENVIRONMENT"):
+            if sys.stdout.isatty() and not os.getenv("RAILWAY_ENVIRONMENT") and not os.getenv("RENDER"):
                 console.clear()
             print_banner(settings.DRY_RUN)
             console.print(f"[dim]Waktu Pemeriksaan: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
@@ -281,6 +311,11 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
     except asyncio.CancelledError:
         log.info("Autonomous loop dihentikan.")
     finally:
+        if health_runner:
+            try:
+                await health_runner.cleanup()
+            except Exception:
+                pass
         await bitget_client.close()
 
 async def main():

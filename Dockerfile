@@ -23,5 +23,8 @@ COPY . .
 # Ensure data directory exists for persistent volume mounting
 RUN mkdir -p /app/data
 
-# Default start command for autonomous trade loop
-CMD ["python", "main.py", "--auto-trade"]
+# Expose port for Cloud Web Service health check
+EXPOSE 10000
+
+# Default start command for autonomous trade loop (live trading)
+CMD ["python", "main.py", "--live", "--auto-trade"]
