@@ -190,14 +190,18 @@ class OpportunityFinder:
             # Jika tidak ada yang lolos kriteria keras, ambil top 5 untuk dianalisis
             top_candidates = opportunities[:5]
 
+        now_ms = int(datetime.utcnow().timestamp() * 1000)
+        since_30d = now_ms - (30 * 86400 * 1000)
+
         for opp in top_candidates:
-            # 1. Ambil riwayat dari SQLite store 7 hari
-            stored_7d = historical_store.get_funding_history(opp.perp_symbol, days=7)
+            # 1. Ambil riwayat dari SQLite store 30 hari
+            stored_30d = historical_store.get_funding_history(opp.perp_symbol, days=30)
             
-            # Jika data di SQLite belum lengkap (< 14 data siklus), lakukan backfill dari API Bitget
-            if len(stored_7d) < 14:
+            # Jika data di SQLite belum lengkap (< 45 data siklus = ~15 hari), lakukan backfill 30 hari dari API Bitget
+            if len(stored_30d) < 45:
                 fetched_history = await self.client.fetch_funding_rate_history(
                     opp.perp_symbol,
+                    since=since_30d,
                     limit=100
                 )
                 if fetched_history:
@@ -206,7 +210,7 @@ class OpportunityFinder:
                         fetched_history,
                         interval_hours=opp.funding_interval_hours
                     )
-                    stored_7d = historical_store.get_funding_history(opp.perp_symbol, days=7)
+                    stored_30d = historical_store.get_funding_history(opp.perp_symbol, days=30)
             else:
                 # Ambil histori siklus terbaru jika perlu
                 fetched_history = await self.client.fetch_funding_rate_history(
@@ -219,18 +223,18 @@ class OpportunityFinder:
                         fetched_history,
                         interval_hours=opp.funding_interval_hours
                     )
-                    stored_7d = historical_store.get_funding_history(opp.perp_symbol, days=7)
+                    stored_30d = historical_store.get_funding_history(opp.perp_symbol, days=30)
 
             opp.historical_funding_rates = [
                 float(h["funding_rate"]) if "funding_rate" in h else float(h.get("fundingRate", 0.0))
-                for h in stored_7d[-settings.PREDICTIVE_HORIZON_CYCLES:]
-            ] if stored_7d else []
+                for h in stored_30d[-settings.PREDICTIVE_HORIZON_CYCLES:]
+            ] if stored_30d else []
 
             # Format data untuk performance_scorer (10 siklus terakhir)
             history_scorer_input = [
                 {"fundingRate": float(h["funding_rate"]) if "funding_rate" in h else float(h.get("fundingRate", 0.0))}
-                for h in stored_7d[-settings.PREDICTIVE_HORIZON_CYCLES:]
-            ] if stored_7d else []
+                for h in stored_30d[-settings.PREDICTIVE_HORIZON_CYCLES:]
+            ] if stored_30d else []
 
             # Analisis data historis siklus jangka pendek
             hist_stats = performance_scorer.analyze_history(history_scorer_input)
@@ -248,16 +252,17 @@ class OpportunityFinder:
             )
             opp.predicted_next_funding_rate = pred_rate
 
-            # 2. Analisis Kuantitatif Historis 7 Hari Mendalam (Rolling 7-Day Analytics)
-            stats_7d = funding_history_analyzer.analyze_7d_history(
+            # 2. Analisis Kuantitatif Historis 30 Hari & 7 Hari Mendalam dari Data Asli Bitget
+            stats_30d = funding_history_analyzer.analyze_history_deep(
                 symbol=opp.perp_symbol,
-                records=stored_7d,
+                records=stored_30d,
                 spot_taker_fee_pct=self.calculator.spot_taker_fee * 100.0,
                 perp_taker_fee_pct=self.calculator.perp_taker_fee * 100.0,
                 funding_interval_hours=opp.funding_interval_hours,
                 basis_spread_percent=opp.basis_spread_percent
             )
-            opp.historical_7d_stats = stats_7d
+            opp.historical_30d_stats = stats_30d
+            opp.historical_7d_stats = stats_30d
 
             # Hitung skor performa komposit berbasis data (disesuaikan dengan interval 4h/8h/1h)
             base_comp_score = performance_scorer.calculate_composite_score(
@@ -270,10 +275,10 @@ class OpportunityFinder:
                 funding_interval_hours=opp.funding_interval_hours
             )
 
-            # Integrasikan skor kualitas historis 7 hari (Bobot: 60% jangka pendek + 40% kualitas 7 hari)
-            if stats_7d and stats_7d.historical_quality_score > 0:
+            # Integrasikan skor kualitas historis 30 hari (Bobot: 50% jangka pendek + 50% kualitas 30 hari)
+            if stats_30d and stats_30d.historical_quality_score > 0:
                 opp.composite_performance_score = round(
-                    (base_comp_score * 0.6) + (stats_7d.historical_quality_score * 0.4),
+                    (base_comp_score * 0.5) + (stats_30d.historical_quality_score * 0.5),
                     1
                 )
             else:
@@ -287,14 +292,17 @@ class OpportunityFinder:
             elif opp.consistency_score_percent < 70.0:
                 opp.is_eligible = False
                 opp.rejection_reason = f"Konsistensi historis rendah ({opp.consistency_score_percent:.0f}% < 70%)"
-            # Jika dalam 7 hari koin sering berbalik negatif (> 2 kali flip)
-            elif stats_7d and stats_7d.negative_flip_count > 2:
+            # Jika dalam 30 hari koin sering berbalik negatif (> 4 kali flip)
+            elif stats_30d and stats_30d.negative_flip_count > 4:
                 opp.is_eligible = False
-                opp.rejection_reason = f"Risiko flip 7 hari tinggi ({stats_7d.negative_flip_count}x rate negatif)"
+                opp.rejection_reason = f"Risiko flip 30 hari tinggi ({stats_30d.negative_flip_count}x rate negatif)"
+            elif stats_30d and stats_30d.thirty_day_cumulative_yield_pct <= 0.0 and stats_30d.sample_count >= 15:
+                opp.is_eligible = False
+                opp.rejection_reason = f"Total yield 30 hari negatif ({stats_30d.thirty_day_cumulative_yield_pct:+.2f}%)"
 
-        # Bersihkan data lama > 7 hari secara berkala (Auto-pruning)
+        # Bersihkan data lama > 30 hari secara berkala (Auto-pruning 30 hari)
         try:
-            historical_store.prune_older_than_days(days=7)
+            historical_store.prune_older_than_days(days=30)
         except Exception:
             pass
 

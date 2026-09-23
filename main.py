@@ -105,9 +105,9 @@ def display_ai_brain_status():
         log.debug(f"AI Brain status display notice: {e}")
 
 def display_opportunities(opportunities, top_n: int = 10):
-    """Menampilkan tabel hasil pemindaian peluang dengan analisis kuantitatif 7 hari & biaya taker."""
+    """Menampilkan tabel hasil pemindaian peluang dengan analisis kuantitatif 30 hari dari Bitget & biaya taker."""
     table = Table(
-        title=f"Hasil Analisis Pasar & Prediksi Funding Rate (Top {top_n} Peluang - Rolling 7D Data)",
+        title=f"Hasil Analisis Pasar & Prediksi Funding Rate (Top {top_n} Peluang - Bitget 30D Data)",
         box=box.ROUNDED,
         header_style="bold magenta"
     )
@@ -117,8 +117,8 @@ def display_opportunities(opportunities, top_n: int = 10):
     table.add_column("Rate / Siklus", style="green", justify="right")
     table.add_column("Prediksi Next", style="bright_green", justify="right")
     table.add_column("Konsistensi", style="yellow", justify="right")
-    table.add_column("7D Yield", style="bold green", justify="right")
-    table.add_column("7D Flip", style="bright_white", justify="center")
+    table.add_column("30D Yield", style="bold green", justify="right")
+    table.add_column("30D Flip", style="bright_white", justify="center")
     table.add_column("Taker Impas", style="bright_yellow", justify="right")
     table.add_column("Net APY", style="bold green", justify="right")
     table.add_column("Skor Data", style="bold cyan", justify="right")
@@ -131,10 +131,10 @@ def display_opportunities(opportunities, top_n: int = 10):
             else f"[dim red][X] {opp.rejection_reason}[/dim red]"
         )
 
-        h7d = opp.historical_7d_stats
-        y7d_str = f"{h7d.seven_day_cumulative_yield_pct:+.2f}%" if h7d and h7d.sample_count > 0 else "[dim]-[/dim]"
-        flip_str = f"[green]{h7d.negative_flip_count}x[/green]" if h7d and h7d.negative_flip_count == 0 else (f"[red]{h7d.negative_flip_count}x[/red]" if h7d else "[dim]-[/dim]")
-        taker_be_str = f"{h7d.taker_fee_recovery_hours:.1f}h" if h7d and h7d.taker_fee_recovery_hours < 999 else f"{opp.break_even_hours:.1f}h"
+        stats = opp.historical_30d_stats or opp.historical_7d_stats
+        y30d_str = f"{stats.thirty_day_cumulative_yield_pct:+.2f}%" if stats and stats.sample_count > 0 else "[dim]-[/dim]"
+        flip_str = f"[green]{stats.thirty_day_flip_count}x[/green]" if stats and stats.thirty_day_flip_count == 0 else (f"[red]{stats.thirty_day_flip_count}x[/red]" if stats else "[dim]-[/dim]")
+        taker_be_str = f"{stats.taker_fee_recovery_hours:.1f}h" if stats and stats.taker_fee_recovery_hours < 999 else f"{opp.break_even_hours:.1f}h"
 
         table.add_row(
             opp.base_asset,
@@ -142,7 +142,7 @@ def display_opportunities(opportunities, top_n: int = 10):
             f"{opp.current_funding_rate * 100:.4f}%",
             f"{opp.predicted_next_funding_rate * 100:.4f}%",
             f"{opp.consistency_score_percent:.0f}%",
-            y7d_str,
+            y30d_str,
             flip_str,
             taker_be_str,
             f"{opp.net_apy_percent:.1f}%",

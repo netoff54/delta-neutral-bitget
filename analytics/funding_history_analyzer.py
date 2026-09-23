@@ -7,12 +7,16 @@ from core.models import HistoricalFundingStats
 
 class FundingHistoryAnalyzer:
     """
-    Engine Analisis Kuantitatif Historis 7 Hari (Rolling 7-Day Analytics):
-    Menganalisis deret waktu funding rate 7 hari dan biaya taker pasar untuk menghasilkan
-    indikator risiko & yield profesional hedge fund bagi sistem Delta-Neutral.
+    Engine Analisis Kuantitatif Historis 30 Hari & 7 Hari (Rolling 30-Day In-Depth Analytics):
+    Membaca data historis langsung dari Bitget hingga 30 hari ke belakang untuk mengukur:
+    1. 30-Day Cumulative Yield & Monthly Expectancy
+    2. 30-Day vs 7-Day APY & Yield Momentum
+    3. 30-Day Negative Flip Frequency (Zero-tolerance filter)
+    4. Volatilitas & Decay Trajectory
+    5. Taker Fee Recovery Period (Amortisasi biaya taker)
     """
 
-    def analyze_7d_history(
+    def analyze_history_deep(
         self,
         symbol: str,
         records: List[Dict[str, Any]],
@@ -22,12 +26,15 @@ class FundingHistoryAnalyzer:
         basis_spread_percent: float = 0.0
     ) -> HistoricalFundingStats:
         """
-        Mengevaluasi deret waktu funding rate 7 hari untuk simbol tertentu.
+        Mengevaluasi deret waktu funding rate historis hingga 30 hari dari Bitget.
         """
         rates = [float(r["funding_rate"]) if "funding_rate" in r else float(r.get("fundingRate", 0.0)) for r in records]
         
         if not rates:
             return HistoricalFundingStats(
+                thirty_day_cumulative_yield_pct=0.0,
+                thirty_day_apy_pct=0.0,
+                thirty_day_flip_count=0,
                 seven_day_cumulative_yield_pct=0.0,
                 seven_day_apy_pct=0.0,
                 positive_consistency_pct=100.0,
@@ -44,10 +51,19 @@ class FundingHistoryAnalyzer:
         cum_yield = sum(rates)
         cum_yield_pct = round(cum_yield * 100.0, 4)
 
-        # Hitung durasi hari sampel (misal 21 siklus 8h = 7 hari)
         cycles_per_day = 24.0 / max(1, funding_interval_hours)
         effective_days = max(1.0, n / cycles_per_day)
-        seven_day_apy = round((cum_yield / effective_days) * 365.0 * 100.0, 2)
+
+        # 30-Day APY
+        thirty_day_apy = round((cum_yield / effective_days) * 365.0 * 100.0, 2)
+
+        # Sub-window 7 Hari (21 siklus terakhir jika interval 8h)
+        sub_7d_count = min(n, int(math.ceil(7.0 * cycles_per_day)))
+        rates_7d = rates[-sub_7d_count:] if sub_7d_count > 0 else rates
+        cum_7d_yield = sum(rates_7d)
+        cum_7d_yield_pct = round(cum_7d_yield * 100.0, 4)
+        days_7d = max(1.0, len(rates_7d) / cycles_per_day)
+        seven_day_apy = round((cum_7d_yield / days_7d) * 365.0 * 100.0, 2)
 
         # Konsistensi positif & deteksi flip negatif
         positive_count = sum(1 for r in rates if r > 0)
@@ -60,7 +76,7 @@ class FundingHistoryAnalyzer:
         std_dev = math.sqrt(variance)
         std_dev_pct = round(std_dev * 100.0, 4)
 
-        # Analisis Decay / Momentum Trajectory (Paruh Pertama vs Paruh Kedua 7 Hari)
+        # Analisis Decay / Momentum Trajectory (Paruh Pertama vs Paruh Kedua)
         if n >= 4:
             mid = n // 2
             first_half = rates[:mid]
@@ -89,18 +105,17 @@ class FundingHistoryAnalyzer:
             recovery_cycles = 999
             recovery_hours = 9999.0
 
-        # Skor Kualitas Kuantitatif Komposit 7 Hari (0 - 100)
+        # Skor Kualitas Kuantitatif Komposit 30 Hari (0 - 100)
         # 1. Konsistensi Positif (Maks 30 poin)
         score_consistency = (consistency_pct / 100.0) * 30.0
 
-        # 2. Proteksi Zero-Flip (Maks 25 poin, penalti -10 per flip negatif)
-        score_flip = max(0.0, 25.0 - (negative_flip_count * 10.0))
+        # 2. Proteksi Zero-Flip (Maks 25 poin, penalti -5 per flip negatif dalam 30 hari)
+        score_flip = max(0.0, 25.0 - (negative_flip_count * 5.0))
 
-        # 3. Besaran APY 7 Hari (Maks 25 poin, cap di 100% APY)
-        score_apy = min(25.0, max(0.0, (seven_day_apy / 100.0) * 25.0))
+        # 3. Besaran APY (Maks 25 poin, cap di 100% APY)
+        score_apy = min(25.0, max(0.0, (thirty_day_apy / 100.0) * 25.0))
 
         # 4. Kecepatan Balik Modal Biaya Taker (Maks 20 poin)
-        # Jika balik modal <= 24 jam = 20 poin penuh, > 72 jam = 0 poin
         score_taker_recovery = max(0.0, (72.0 - min(72.0, recovery_hours)) / 72.0) * 20.0
 
         # 5. Penalti Volatilitas & Decay
@@ -110,7 +125,10 @@ class FundingHistoryAnalyzer:
         composite_score = round(max(0.0, score_consistency + score_flip + score_apy + score_taker_recovery - vol_penalty - decay_penalty), 1)
 
         return HistoricalFundingStats(
-            seven_day_cumulative_yield_pct=cum_yield_pct,
+            thirty_day_cumulative_yield_pct=cum_yield_pct,
+            thirty_day_apy_pct=thirty_day_apy,
+            thirty_day_flip_count=negative_flip_count,
+            seven_day_cumulative_yield_pct=cum_7d_yield_pct,
             seven_day_apy_pct=seven_day_apy,
             positive_consistency_pct=consistency_pct,
             negative_flip_count=negative_flip_count,
@@ -121,5 +139,8 @@ class FundingHistoryAnalyzer:
             historical_quality_score=composite_score,
             sample_count=n
         )
+
+    # Alias untuk kompatibilitas 7-hari
+    analyze_7d_history = analyze_history_deep
 
 funding_history_analyzer = FundingHistoryAnalyzer()

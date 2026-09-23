@@ -138,9 +138,9 @@ class HistoricalStore:
 
         return len(records)
 
-    def get_funding_history(self, symbol: str, days: int = 7) -> List[Dict[str, Any]]:
+    def get_funding_history(self, symbol: str, days: int = 30) -> List[Dict[str, Any]]:
         """
-        Mengambil riwayat funding rate dalam kurun waktu `days` terakhir (default 7 hari),
+        Mengambil riwayat funding rate dalam kurun waktu `days` terakhir (default 30 hari),
         diurutkan dari waktu tertua ke terbaru.
         """
         cutoff_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
@@ -274,9 +274,9 @@ class HistoricalStore:
             assets = [r["base_asset"] for r in cursor.fetchall()]
         return {a: self.get_pair_reputation(a)["reputation_score"] for a in assets}
 
-    def prune_older_than_days(self, days: int = 7) -> Dict[str, int]:
+    def prune_older_than_days(self, days: int = 30) -> Dict[str, int]:
         """
-        Pembersihan berkala (Rolling 7 Days Maintenance):
+        Pembersihan berkala (Rolling 30 Days Maintenance):
         Menghapus data funding rate dan snapshot taker yang lebih tua dari `days` hari.
         Mempertahankan ukuran database tetap sangat kecil (< 5 MB) dan performa tetap kilat.
         """

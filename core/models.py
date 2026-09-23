@@ -41,7 +41,8 @@ class Opportunity(BaseModel):
     funding_trend: str = Field(default="STABLE", description="'UP', 'DOWN', 'STABLE'")
     composite_performance_score: float = Field(default=0.0, description="Skor ranking komposit berbasis data")
 
-    # 7-Day In-Depth Historical Telemetry & Taker Quality
+    # 30-Day & 7-Day In-Depth Historical Telemetry & Taker Quality
+    historical_30d_stats: Optional["HistoricalFundingStats"] = None
     historical_7d_stats: Optional["HistoricalFundingStats"] = None
 
     break_even_cycles: int = Field(..., description="Jumlah siklus funding untuk balik modal fee")
@@ -52,15 +53,23 @@ class Opportunity(BaseModel):
     scanned_at: datetime = Field(default_factory=datetime.utcnow)
 
 class HistoricalFundingStats(BaseModel):
+    # 30-Day Metrics
+    thirty_day_cumulative_yield_pct: float = Field(default=0.0, description="Total akumulasi yield funding dalam 30 hari (%)")
+    thirty_day_apy_pct: float = Field(default=0.0, description="Annualized APY berdasarkan 30 hari (%)")
+    thirty_day_flip_count: int = Field(default=0, description="Berapa kali rate <= 0% dalam 30 hari")
+    
+    # 7-Day Metrics (Sub-window)
     seven_day_cumulative_yield_pct: float = Field(default=0.0, description="Total akumulasi yield funding dalam 7 hari (%)")
     seven_day_apy_pct: float = Field(default=0.0, description="Annualized APY berdasarkan 7 hari (%)")
-    positive_consistency_pct: float = Field(default=100.0, description="Persentase siklus positif 7 hari (%)")
-    negative_flip_count: int = Field(default=0, description="Berapa kali rate <= 0% dalam 7 hari")
-    rate_std_dev: float = Field(default=0.0, description="Standar deviasi / volatilitas rate 7 hari")
+    
+    # Overall Consistency & Risk
+    positive_consistency_pct: float = Field(default=100.0, description="Persentase siklus positif (%)")
+    negative_flip_count: int = Field(default=0, description="Berapa kali rate <= 0%")
+    rate_std_dev: float = Field(default=0.0, description="Standar deviasi / volatilitas rate")
     decay_trend: str = Field(default="STABLE", description="'ACCELERATING', 'DECAYING', 'STABLE'")
     taker_fee_recovery_cycles: int = Field(default=1, description="Estimasi siklus rata-rata untuk menutup biaya taker")
     taker_fee_recovery_hours: float = Field(default=8.0, description="Estimasi jam untuk menutup biaya taker")
-    historical_quality_score: float = Field(default=0.0, description="Skor kualitas kuantitatif komposit 7 hari (0-100)")
+    historical_quality_score: float = Field(default=0.0, description="Skor kualitas kuantitatif komposit (0-100)")
     sample_count: int = Field(default=0, description="Jumlah data settlement funding yang dianalisis")
 
 class TakerSnapshot(BaseModel):
