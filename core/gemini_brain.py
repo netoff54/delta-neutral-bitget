@@ -3,7 +3,7 @@ import json
 import asyncio
 import aiohttp
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from config.settings import settings
@@ -28,6 +28,8 @@ class GeminiBrain:
        skor prediksi, likuiditas, dan pengalaman masa lalu.
     4. Dynamic Minute-by-Minute Yield Projection:
        Memproyeksikan estimasi dividen funding fee berikutnya sesuai interval dinamis koin (1h/4h/8h).
+    5. Real-Time Ground-Truth Decision Engine (50% Quota Allocation = 720 calls/hari):
+       Mengevaluasi telemetri pasar riil (basis spread, drift, rate velocity) setiap 2 menit.
     """
 
     FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash"]
@@ -44,6 +46,9 @@ class GeminiBrain:
         self.memory_path.parent.mkdir(parents=True, exist_ok=True)
         self.memory: List[Dict[str, Any]] = []
         self.latest_insight: str = "AI AGI Brain aktif, siap menganalisis pasar & siklus funding secara dinamis."
+        self.daily_calls_count: int = 0
+        self.last_call_date: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.max_daily_calls: int = getattr(settings, "AI_MAX_DAILY_CALLS", 720)
         self.load_memory()
 
     def load_memory(self):
@@ -94,11 +99,39 @@ class GeminiBrain:
 
         return "\n".join(context_lines)
 
+    def get_quota_status(self) -> Dict[str, Any]:
+        """Mengembalikan status kuota dan alokasi 50% kapasitas harian Gemini AGI."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if today != self.last_call_date:
+            self.daily_calls_count = 0
+            self.last_call_date = today
+        return {
+            "calls_today": self.daily_calls_count,
+            "max_daily_calls": self.max_daily_calls,
+            "official_rpd": 1500,
+            "budget_percent": round((self.daily_calls_count / max(1, self.max_daily_calls)) * 48.0, 1)
+        }
+
     async def call_gemini(self, prompt: str, system_instruction: Optional[str] = None) -> Optional[str]:
-        """Mengirim permintaan ke Google Gemini API dengan mekanisme fallback model."""
+        """Mengirim permintaan ke Google Gemini API dengan mekanisme fallback model dan batasan 50% kuota."""
         if not self.api_key:
             log.debug("[GeminiBrain] API key Gemini belum terpasang.")
             return None
+
+        # Reset dan periksa kuota harian (maksimal 720 panggilan/hari = 48% dari limit 1.500 RPD)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if today != self.last_call_date:
+            self.daily_calls_count = 0
+            self.last_call_date = today
+
+        if self.daily_calls_count >= self.max_daily_calls:
+            log.warning(
+                f"[GeminiBrain] Batas anggaran 50% kuota harian ({self.max_daily_calls} calls/hari) "
+                f"telah tercapai ({self.daily_calls_count}/{self.max_daily_calls}). Menahan panggilan agar hemat selamanya."
+            )
+            return None
+
+        self.daily_calls_count += 1
 
         headers = {"Content-Type": "application/json"}
         payload = {
@@ -340,6 +373,125 @@ class GeminiBrain:
         approved = "SETUJUI" in ai_res.upper()
         log.info(f"🧠 [Gemini AGI - Keputusan Rotasi]: {ai_res}")
         return approved
+
+    async def evaluate_realtime_ground_truth(
+        self,
+        active_positions: List[DeltaNeutralPosition],
+        total_balance_usdt: float,
+        spot_free_usdt: float,
+        swap_free_usdt: float,
+        top_opportunities: List[Opportunity],
+        market_countdown_minutes: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Evaluasi telemetri pasar real-time setiap 2 menit menggunakan model Gemini (Alokasi 50% kuota).
+        Membaca data riil di lapangan (spread basis, drift harga spot vs perp, rate velocity, countdown)
+        dan menghasilkan keputusan taktis adaptif.
+        """
+        if not active_positions:
+            top_info = []
+            for o in top_opportunities[:3]:
+                top_info.append(
+                    f"- {o.base_asset}: Rate {o.current_funding_rate*100:+.4f}%/{o.funding_interval_hours}h, "
+                    f"Net APY: {o.net_apy_percent:.1f}%, Vol24h: ${o.volume_24h_usdt:,.0f}"
+                )
+            market_summary = "\n".join(top_info) if top_info else "Tidak ada kandidat memenuhi syarat saat ini."
+
+            prompt = (
+                f"TELEMETRI PASAR REAL-TIME (TIDAK ADA POSISI AKTIF):\n"
+                f"Saldo Cair: Spot ${spot_free_usdt:.2f}, Futures ${swap_free_usdt:.2f}, Total: ${total_balance_usdt:.2f} USDT.\n"
+                f"Kandidat Peluang Teratas:\n{market_summary}\n\n"
+                f"Berikan arahan strategis dalam format JSON murni:\n"
+                f'{{"action": "OBSERVE_MARKET", "tactical_guidance": "penjelasan 1 kalimat", "market_condition": "NORMAL", "confidence": 0.95}}'
+            )
+            raw = await self.call_gemini(prompt)
+            if raw:
+                try:
+                    clean = raw.strip().replace("```json", "").replace("```", "").strip()
+                    res = json.loads(clean)
+                    if "tactical_guidance" in res:
+                        self.latest_insight = res["tactical_guidance"]
+                    return res
+                except Exception:
+                    self.latest_insight = raw[:120]
+            return {
+                "action": "OBSERVE_MARKET",
+                "tactical_guidance": "Memindai pasar real-time tiap 2 menit untuk peluang konsisten.",
+                "market_condition": "NORMAL",
+                "confidence": 1.0
+            }
+
+        # Ada posisi aktif: bangun telemetri data lapangan lengkap
+        pos = active_positions[0]
+        spot_drift = ((pos.spot_leg.current_price - pos.spot_leg.entry_price) / max(1e-6, pos.spot_leg.entry_price)) * 100
+        perp_drift = ((pos.perp_leg.current_price - pos.perp_leg.entry_price) / max(1e-6, pos.perp_leg.entry_price)) * 100
+        basis_spread = spot_drift - perp_drift
+
+        top_alts = []
+        for o in top_opportunities[:3]:
+            if o.base_asset != pos.base_asset:
+                top_alts.append(
+                    f"{o.base_asset} (Rate: {o.current_funding_rate*100:+.4f}%/{o.funding_interval_hours}h, "
+                    f"Net APY: {o.net_apy_percent:.1f}%)"
+                )
+        alts_str = ", ".join(top_alts) if top_alts else "Tidak ada alternatif lebih baik"
+        memory_ctx = self.get_accumulated_knowledge_context()
+
+        prompt = (
+            f"TELEMETRI REAL-TIME DATA LAPANGAN (BITGET DELTA-NEUTRAL):\n"
+            f"1. Posisi Aktif: {pos.base_asset} (Leverage: {pos.leverage}x)\n"
+            f"   - Spot: Masuk ${pos.spot_leg.entry_price:,.4f} -> Riil ${pos.spot_leg.current_price:,.4f} (Drift: {spot_drift:+.2f}%)\n"
+            f"   - Perp Short: Masuk ${pos.perp_leg.entry_price:,.4f} -> Riil ${pos.perp_leg.current_price:,.4f} (Drift: {perp_drift:+.2f}%)\n"
+            f"   - Basis Spread Divergence: {basis_spread:+.2f}%\n"
+            f"   - Funding Rate Terkini: {pos.last_funding_rate * 100:+.4f}%\n"
+            f"   - Proyeksi Dividen Siklus Berikutnya: +${pos.projected_next_funding_payout:.5f} USDT\n"
+            f"   - Akumulasi Funding Diterima: +${pos.cumulative_funding_received:.4f} USDT | Total Biaya: ${pos.total_fees_paid:.4f} USDT\n"
+            f"   - Net PnL Riil: ${pos.net_pnl_usdt:+.4f} USDT ({'BEP TERCAPAI' if pos.is_bep_reached else 'MENUJU BEP'})\n"
+            f"   - Margin Ratio: {pos.current_margin_ratio*100:.1f}% (Batas Bahaya: 75%)\n"
+            f"   - Countdown Menuju Settlement: {market_countdown_minutes if market_countdown_minutes is not None else '?'} menit\n"
+            f"2. Pasar Alternatif: {alts_str}\n"
+            f"3. Konteks Pengalaman Historis:\n{memory_ctx}\n\n"
+            f"Instruksi: Sebagai Chief Risk Officer AI, tentukan keputusan taktis paling bijak saat ini. "
+            f"Balas HANYA format JSON valid:\n"
+            f'{{"action": "HOLD_AND_HARVEST" | "TIGHTEN_EXIT" | "PROACTIVE_REBALANCE" | "ROTATE" | "EMERGENCY_UNWIND", '
+            f'"tactical_guidance": "alasan 1-2 kalimat berbasis data telemetri", '
+            f'"market_condition": "OPTIMAL" | "VOLATILE" | "RATE_DECAYING", "confidence": 0.95}}'
+        )
+
+        raw = await self.call_gemini(
+            prompt,
+            system_instruction="Anda adalah AGI Portfolio Risk Manager Delta-Neutral di exchange Bitget. Analisis data lapangan dengan bijak untuk memaksimumkan yield dividen dan meminimalkan risiko."
+        )
+
+        decision = {
+            "action": "HOLD_AND_HARVEST",
+            "tactical_guidance": f"Mempertahankan posisi {pos.base_asset} untuk memanen dividen funding rate berikutnya.",
+            "market_condition": "OPTIMAL",
+            "confidence": 1.0
+        }
+
+        if raw:
+            try:
+                clean = raw.strip().replace("```json", "").replace("```", "").strip()
+                parsed = json.loads(clean)
+                decision.update(parsed)
+                if "tactical_guidance" in decision:
+                    self.latest_insight = decision["tactical_guidance"]
+
+                if decision.get("action") not in ["HOLD_AND_HARVEST", "OBSERVE_MARKET"]:
+                    self.memory.append({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "event_type": "REALTIME_TACTICAL_DECISION",
+                        "base_asset": pos.base_asset,
+                        "decision": decision.get("action"),
+                        "insight": decision.get("tactical_guidance")
+                    })
+                    self.save_memory()
+            except Exception as e:
+                log.debug(f"[GeminiBrain] Error parsing JSON ground truth: {e}")
+                self.latest_insight = raw[:120]
+
+        return decision
 
     def get_latest_insight(self) -> str:
         """Mengambil wawasan terkini untuk UI konsol & cloud dashboard."""

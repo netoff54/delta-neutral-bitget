@@ -79,18 +79,21 @@ def display_compounding_pool(total_liquid_usdt: float, spot_free: float = 0.0, s
         ))
 
 def display_ai_brain_status():
-    """Menampilkan status dan wawasan pembelajaran terkini dari Google Gemini AI Brain."""
+    """Menampilkan status dan wawasan pembelajaran terkini dari Google Gemini AI Brain serta pelacak kuota 50%."""
     if not settings.ENABLE_AI_BRAIN or not settings.GEMINI_API_KEY:
         return
     try:
         from core.gemini_brain import gemini_brain
         insight = gemini_brain.get_latest_insight()
         mem_count = len(gemini_brain.memory)
+        quota = gemini_brain.get_quota_status()
         console.print(Panel(
             f"[bold magenta]🧠 AI BRAIN ENGINE:[/bold magenta] [bold cyan]{settings.GEMINI_MODEL}[/bold cyan] "
-            f"[dim]({mem_count} siklus evaluasi & pembelajaran tersimpan di disk)[/dim]\n"
-            f"[bold yellow]💡 INSIGHT STRATEGIS TERKINI:[/bold yellow]\n[italic white]{insight}[/italic white]",
-            title="[bold magenta]Google Gemini AI Adaptive Brain[/bold magenta]",
+            f"[dim]({mem_count} siklus pembelajaran tersimpan di disk)[/dim]\n"
+            f"[bold green]📊 ALOKASI KUOTA 50% (REAL-TIME 2M):[/bold green] [bold white]{quota['calls_today']}/{quota['max_daily_calls']} calls/hari[/bold white] "
+            f"[dim](Target: ~{quota['budget_percent']}% dari plafon resmi {quota['official_rpd']} RPD Google)[/dim]\n"
+            f"[bold yellow]💡 KEPUTUSAN & INSIGHT TAKTIS TERKINI:[/bold yellow]\n[italic white]{insight}[/italic white]",
+            title="[bold magenta]Google Gemini AI Adaptive Real-Time Brain[/bold magenta]",
             box=box.ROUNDED
         ))
     except Exception as e:
@@ -258,6 +261,31 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
             # 3. Pindai dan evaluasi seluruh pasar secara prediktif dengan modal ter-compound
             opportunities = await opportunity_finder.scan(target_nominal_usdt=current_compounded_cap)
             display_opportunities(opportunities, top_n=10)
+
+            # 3.5. Evaluasi Real-Time Ground-Truth oleh Gemini AGI (Alokasi 50% Kuota = 720 calls/hari)
+            if settings.ENABLE_AI_BRAIN and getattr(settings, "AI_REALTIME_EVALUATION", True):
+                from core.gemini_brain import gemini_brain
+                active_pos_list = position_manager.get_active_positions()
+                cd_mins = None
+                if active_pos_list:
+                    try:
+                        cd_res = await bitget_client.get_funding_settlement_countdown(active_pos_list[0].perp_leg.symbol)
+                        cd_mins = cd_res.get("minutes_until_settlement")
+                    except Exception:
+                        pass
+
+                agi_eval = await gemini_brain.evaluate_realtime_ground_truth(
+                    active_positions=active_pos_list,
+                    total_balance_usdt=total_bal,
+                    spot_free_usdt=spot_free,
+                    swap_free_usdt=swap_free,
+                    top_opportunities=opportunities,
+                    market_countdown_minutes=cd_mins
+                )
+
+                if agi_eval.get("action") == "EMERGENCY_UNWIND" and active_pos_list:
+                    log.warning(f"🚨 [Gemini AGI Ground-Truth]: Memutuskan EMERGENCY UNWIND -> {agi_eval.get('tactical_guidance')}")
+                    await funding_guard.emergency_close_position(active_pos_list[0], reason="AGI Ground-Truth Risk Alert")
 
             # 4. Rotasi Peluang Otomatis (Mencari taker lain dengan potensi yield lebih tinggi)
             await auto_rebalancer.evaluate_and_rotate(

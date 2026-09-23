@@ -74,7 +74,9 @@ class BotSettings(BaseSettings):
     PRE_SETTLEMENT_CHECK_MINUTES: int = Field(default=5, description="Jendela waktu pra-settlement (5 menit)")
 
     # Polling intervals (seconds)
-    SCAN_INTERVAL_SECONDS: int = Field(default=300, description="Interval between opportunity scans (5 mins)")
+    SCAN_INTERVAL_SECONDS: int = Field(default=120, description="Interval between opportunity scans (2 mins = 720 cycles/day = ~50% Gemini daily quota)")
     MONITOR_INTERVAL_SECONDS: int = Field(default=60, description="Interval between position health checks (1 min)")
+    AI_MAX_DAILY_CALLS: int = Field(default=720, description="Maksimal panggilan AI harian (48% dari kuota 1500 RPD Google)")
+    AI_REALTIME_EVALUATION: bool = Field(default=True, description="Evaluasi telemetri pasar real-time setiap siklus 2 menit")
 
 settings = BotSettings()
