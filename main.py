@@ -249,90 +249,90 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
 
                 # 0. Ambil saldo akun dan tampilkan Portfolio Pool & Proteksi Earn
                 bal = await bitget_client.fetch_balance()
-            total_bal = float(bal.get("total", {}).get("USDT", 0.0) or bal.get("USDT", {}).get("total", 0.0) or (settings.TOTAL_MAX_CAPITAL_USDT or 0.0))
-            spot_free = float(bal.get("spot_free", 0.0))
-            swap_free = float(bal.get("swap_free", 0.0))
-            otc_free = float(bal.get("otc_free", 0.0))
-            display_compounding_pool(total_bal, spot_free, swap_free, otc_free)
-            display_ai_brain_status()
+                total_bal = float(bal.get("total", {}).get("USDT", 0.0) or bal.get("USDT", {}).get("total", 0.0) or (settings.TOTAL_MAX_CAPITAL_USDT or 0.0))
+                spot_free = float(bal.get("spot_free", 0.0))
+                swap_free = float(bal.get("swap_free", 0.0))
+                otc_free = float(bal.get("otc_free", 0.0))
+                display_compounding_pool(total_bal, spot_free, swap_free, otc_free)
+                display_ai_brain_status()
 
-            # Hitung modal trading dinamis yang dialokasikan (seluruh saldo cair atau manual override)
-            current_compounded_cap = manual_capital if manual_capital else compounding_manager.get_position_capital(total_bal)
+                # Hitung modal trading dinamis yang dialokasikan (seluruh saldo cair atau manual override)
+                current_compounded_cap = manual_capital if manual_capital else compounding_manager.get_position_capital(total_bal)
 
-            # 1. Health & Risk Check pada posisi aktif
-            log.info("Menjalankan pemeriksaan risiko (Margin Guard & Funding Guard)...")
-            await margin_guard.check_positions_health()
-            await funding_guard.check_positions_funding()
+                # 1. Health & Risk Check pada posisi aktif
+                log.info("Menjalankan pemeriksaan risiko (Margin Guard & Funding Guard)...")
+                await margin_guard.check_positions_health()
+                await funding_guard.check_positions_funding()
 
-            # 2. Auto-Rebalancing Delta Drift
-            await auto_rebalancer.rebalance_delta_drift()
+                # 2. Auto-Rebalancing Delta Drift
+                await auto_rebalancer.rebalance_delta_drift()
 
-            # Tampilkan posisi aktif
-            display_active_positions()
+                # Tampilkan posisi aktif
+                display_active_positions()
 
-            # 3. Pindai dan evaluasi seluruh pasar secara prediktif dengan modal ter-compound
-            opportunities = await opportunity_finder.scan(target_nominal_usdt=current_compounded_cap)
-            display_opportunities(opportunities, top_n=10)
+                # 3. Pindai dan evaluasi seluruh pasar secara prediktif dengan modal ter-compound
+                opportunities = await opportunity_finder.scan(target_nominal_usdt=current_compounded_cap)
+                display_opportunities(opportunities, top_n=10)
 
-            # 3.5. Evaluasi Real-Time Ground-Truth oleh Gemini AGI (Alokasi 50% Kuota = 720 calls/hari)
-            if settings.ENABLE_AI_BRAIN and getattr(settings, "AI_REALTIME_EVALUATION", True):
-                from core.gemini_brain import gemini_brain
-                active_pos_list = position_manager.get_active_positions()
-                cd_mins = None
-                if active_pos_list:
-                    try:
-                        cd_res = await bitget_client.get_funding_settlement_countdown(active_pos_list[0].perp_leg.symbol)
-                        cd_mins = cd_res.get("minutes_until_settlement")
-                    except Exception:
-                        pass
+                # 3.5. Evaluasi Real-Time Ground-Truth oleh Gemini AGI (Alokasi 50% Kuota = 720 calls/hari)
+                if settings.ENABLE_AI_BRAIN and getattr(settings, "AI_REALTIME_EVALUATION", True):
+                    from core.gemini_brain import gemini_brain
+                    active_pos_list = position_manager.get_active_positions()
+                    cd_mins = None
+                    if active_pos_list:
+                        try:
+                            cd_res = await bitget_client.get_funding_settlement_countdown(active_pos_list[0].perp_leg.symbol)
+                            cd_mins = cd_res.get("minutes_until_settlement")
+                        except Exception:
+                            pass
 
-                agi_eval = await gemini_brain.evaluate_realtime_ground_truth(
-                    active_positions=active_pos_list,
-                    total_balance_usdt=total_bal,
-                    spot_free_usdt=spot_free,
-                    swap_free_usdt=swap_free,
-                    top_opportunities=opportunities,
-                    market_countdown_minutes=cd_mins
+                    agi_eval = await gemini_brain.evaluate_realtime_ground_truth(
+                        active_positions=active_pos_list,
+                        total_balance_usdt=total_bal,
+                        spot_free_usdt=spot_free,
+                        swap_free_usdt=swap_free,
+                        top_opportunities=opportunities,
+                        market_countdown_minutes=cd_mins
+                    )
+
+                    if agi_eval.get("action") == "EMERGENCY_UNWIND" and active_pos_list:
+                        log.warning(f"🚨 [Gemini AGI Ground-Truth]: Memutuskan EMERGENCY UNWIND -> {agi_eval.get('tactical_guidance')}")
+                        await funding_guard.emergency_close_position(active_pos_list[0], reason="AGI Ground-Truth Risk Alert")
+
+                # 4. Rotasi Peluang Otomatis (Mencari taker lain dengan potensi yield lebih tinggi)
+                await auto_rebalancer.evaluate_and_rotate(
+                    opportunities=opportunities,
+                    capital_per_position=current_compounded_cap
                 )
 
-                if agi_eval.get("action") == "EMERGENCY_UNWIND" and active_pos_list:
-                    log.warning(f"🚨 [Gemini AGI Ground-Truth]: Memutuskan EMERGENCY UNWIND -> {agi_eval.get('tactical_guidance')}")
-                    await funding_guard.emergency_close_position(active_pos_list[0], reason="AGI Ground-Truth Risk Alert")
+                # 5. Keputusan Eksekusi Pembukaan Posisi Baru
+                eligible_opportunities = [o for o in opportunities if o.is_eligible]
+                active_count = len(position_manager.get_active_positions())
 
-            # 4. Rotasi Peluang Otomatis (Mencari taker lain dengan potensi yield lebih tinggi)
-            await auto_rebalancer.evaluate_and_rotate(
-                opportunities=opportunities,
-                capital_per_position=current_compounded_cap
-            )
+                # Batas posisi aktif: default MAX_CONCURRENT_POSITIONS (1 posisi agar modal fokus 100%)
+                max_allowed_positions = settings.MAX_CONCURRENT_POSITIONS
 
-            # 5. Keputusan Eksekusi Pembukaan Posisi Baru
-            eligible_opportunities = [o for o in opportunities if o.is_eligible]
-            active_count = len(position_manager.get_active_positions())
-
-            # Batas posisi aktif: default MAX_CONCURRENT_POSITIONS (1 posisi agar modal fokus 100%)
-            max_allowed_positions = settings.MAX_CONCURRENT_POSITIONS
-
-            if auto_trade and eligible_opportunities:
-                if active_count < max_allowed_positions:
-                    from core.gemini_brain import gemini_brain
-                    best_opp = await gemini_brain.select_optimal_taker_agi(eligible_opportunities, current_compounded_cap) or eligible_opportunities[0]
-                    if not position_manager.get_position_by_base(best_opp.base_asset):
+                if auto_trade and eligible_opportunities:
+                    if active_count < max_allowed_positions:
+                        from core.gemini_brain import gemini_brain
+                        best_opp = await gemini_brain.select_optimal_taker_agi(eligible_opportunities, current_compounded_cap) or eligible_opportunities[0]
+                        if not position_manager.get_position_by_base(best_opp.base_asset):
+                            console.print(
+                                f"\n[bold green]🎯 Peluang Terbaik Terpilih AGI: {best_opp.base_asset} "
+                                f"(Skor: {best_opp.composite_performance_score:.1f}, Prediksi Next: {best_opp.predicted_next_funding_rate*100:.4f}%, "
+                                f"Net APY: {best_opp.net_apy_percent:.1f}%).\n"
+                                f"Mengeksekusi posisi Delta-Neutral dengan Alokasi Modal Cair: ${current_compounded_cap:.2f} USDT "
+                                f"(Max {settings.LEVERAGE}x Leverage)...[/bold green]"
+                            )
+                            await order_executor.open_delta_neutral_position(
+                                opportunity=best_opp,
+                                allocated_capital_usdt=current_compounded_cap
+                            )
+                    else:
                         console.print(
-                            f"\n[bold green]🎯 Peluang Terbaik Terpilih AGI: {best_opp.base_asset} "
-                            f"(Skor: {best_opp.composite_performance_score:.1f}, Prediksi Next: {best_opp.predicted_next_funding_rate*100:.4f}%, "
-                            f"Net APY: {best_opp.net_apy_percent:.1f}%).\n"
-                            f"Mengeksekusi posisi Delta-Neutral dengan Alokasi Modal Cair: ${current_compounded_cap:.2f} USDT "
-                            f"(Max {settings.LEVERAGE}x Leverage)...[/bold green]"
+                            f"\n[yellow]Kapasitas modal trading terpakai penuh ({active_count}/{max_allowed_positions} posisi aktif). "
+                            f"Modal sedang bekerja memanen funding fee.[/yellow]"
                         )
-                        await order_executor.open_delta_neutral_position(
-                            opportunity=best_opp,
-                            allocated_capital_usdt=current_compounded_cap
-                        )
-                else:
-                    console.print(
-                        f"\n[yellow]Kapasitas modal trading terpakai penuh ({active_count}/{max_allowed_positions} posisi aktif). "
-                        f"Modal sedang bekerja memanen funding fee.[/yellow]"
-                    )
 
                 # Bersihkan memori RAM agar hemat biaya container di cloud
                 gc.collect()
