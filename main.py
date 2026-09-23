@@ -233,8 +233,11 @@ async def start_health_check_server():
 
 async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
     """Loop otonom: Memindai pasar, memprediksi yield, auto-rebalance, dan memutar profit (compounding)."""
-    await bitget_client.initialize()
+    # 1. Buka port HTTP Health Server terlebih dahulu agar Cloud (Render/Railway) langsung mendeteksi status LIVE
     health_runner = await start_health_check_server()
+
+    # 2. Inisialisasi koneksi exchange
+    await bitget_client.initialize()
 
     try:
         while True:
