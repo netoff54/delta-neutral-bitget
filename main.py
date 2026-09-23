@@ -84,14 +84,19 @@ def display_ai_brain_status():
         return
     try:
         from core.gemini_brain import gemini_brain
+        from core.historical_store import historical_store
         insight = gemini_brain.get_latest_insight()
         mem_count = len(gemini_brain.memory)
         quota = gemini_brain.get_quota_status()
+        reps = historical_store.get_all_pair_reputations()
+        rep_summary = ", ".join([f"{k}: {v:+.2f}" for k, v in list(reps.items())[:4]]) or "Semua aset netral awal"
+
         console.print(Panel(
             f"[bold magenta]🧠 AI BRAIN ENGINE:[/bold magenta] [bold cyan]{settings.GEMINI_MODEL}[/bold cyan] "
             f"[dim]({mem_count} siklus pembelajaran tersimpan di disk)[/dim]\n"
             f"[bold green]📊 ALOKASI KUOTA 50% (REAL-TIME 2M):[/bold green] [bold white]{quota['calls_today']}/{quota['max_daily_calls']} calls/hari[/bold white] "
             f"[dim](Target: ~{quota['budget_percent']}% dari plafon resmi {quota['official_rpd']} RPD Google)[/dim]\n"
+            f"[bold blue]📚 MEMORI REPUTASI KOIN 7-HARI:[/bold blue] [dim white]{rep_summary}[/dim white]\n"
             f"[bold yellow]💡 KEPUTUSAN & INSIGHT TAKTIS TERKINI:[/bold yellow]\n[italic white]{insight}[/italic white]",
             title="[bold magenta]Google Gemini AI Adaptive Real-Time Brain[/bold magenta]",
             box=box.ROUNDED
@@ -100,9 +105,9 @@ def display_ai_brain_status():
         log.debug(f"AI Brain status display notice: {e}")
 
 def display_opportunities(opportunities, top_n: int = 10):
-    """Menampilkan tabel hasil pemindaian peluang dengan analisis prediktif."""
+    """Menampilkan tabel hasil pemindaian peluang dengan analisis kuantitatif 7 hari & biaya taker."""
     table = Table(
-        title=f"Hasil Analisis Pasar & Prediksi Funding Rate (Top {top_n} Peluang)",
+        title=f"Hasil Analisis Pasar & Prediksi Funding Rate (Top {top_n} Peluang - Rolling 7D Data)",
         box=box.ROUNDED,
         header_style="bold magenta"
     )
@@ -112,11 +117,11 @@ def display_opportunities(opportunities, top_n: int = 10):
     table.add_column("Rate / Siklus", style="green", justify="right")
     table.add_column("Prediksi Next", style="bright_green", justify="right")
     table.add_column("Konsistensi", style="yellow", justify="right")
-    table.add_column("Tren", style="white", justify="center")
+    table.add_column("7D Yield", style="bold green", justify="right")
+    table.add_column("7D Flip", style="bright_white", justify="center")
+    table.add_column("Taker Impas", style="bright_yellow", justify="right")
     table.add_column("Net APY", style="bold green", justify="right")
-    table.add_column("Impas (BE)", style="bright_yellow", justify="right")
     table.add_column("Skor Data", style="bold cyan", justify="right")
-    table.add_column("Vol 24h (Spot/Perp)", style="dim", justify="right")
     table.add_column("Status / Kelayakan", justify="left")
 
     for opp in opportunities[:top_n]:
@@ -126,7 +131,10 @@ def display_opportunities(opportunities, top_n: int = 10):
             else f"[dim red][X] {opp.rejection_reason}[/dim red]"
         )
 
-        trend_color = "green" if opp.funding_trend == "UP" else ("red" if opp.funding_trend == "DOWN" else "yellow")
+        h7d = opp.historical_7d_stats
+        y7d_str = f"{h7d.seven_day_cumulative_yield_pct:+.2f}%" if h7d and h7d.sample_count > 0 else "[dim]-[/dim]"
+        flip_str = f"[green]{h7d.negative_flip_count}x[/green]" if h7d and h7d.negative_flip_count == 0 else (f"[red]{h7d.negative_flip_count}x[/red]" if h7d else "[dim]-[/dim]")
+        taker_be_str = f"{h7d.taker_fee_recovery_hours:.1f}h" if h7d and h7d.taker_fee_recovery_hours < 999 else f"{opp.break_even_hours:.1f}h"
 
         table.add_row(
             opp.base_asset,
@@ -134,11 +142,11 @@ def display_opportunities(opportunities, top_n: int = 10):
             f"{opp.current_funding_rate * 100:.4f}%",
             f"{opp.predicted_next_funding_rate * 100:.4f}%",
             f"{opp.consistency_score_percent:.0f}%",
-            f"[{trend_color}]{opp.funding_trend}[/{trend_color}]",
+            y7d_str,
+            flip_str,
+            taker_be_str,
             f"{opp.net_apy_percent:.1f}%",
-            f"{opp.break_even_hours:.1f}h",
             f"{opp.composite_performance_score:.1f}",
-            f"${opp.spot_volume_24h/1e6:.1f}M / ${opp.perp_volume_24h/1e6:.1f}M",
             status_text
         )
 

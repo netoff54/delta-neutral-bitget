@@ -12,6 +12,7 @@ from risk.yield_vault import yield_vault
 from risk.compounding_manager import compounding_manager
 
 from core.gemini_brain import gemini_brain
+from core.historical_store import historical_store
 
 class FundingGuard:
     """
@@ -90,6 +91,22 @@ class FundingGuard:
                     reason=f"Zero-Tolerance Negative Funding ({current_rate * 100:.4f}%)"
                 )
                 if success_close:
+                    try:
+                        historical_store.record_agi_experience(
+                            event_type="EMERGENCY_EXIT_NEGATIVE_RATE",
+                            base_asset=pos.base_asset,
+                            funding_rate=current_rate,
+                            harvest_usdt=pos.cumulative_funding_received,
+                            net_pnl_usdt=pos.net_pnl_usdt,
+                            holding_hours=(datetime.utcnow() - pos.entry_time).total_seconds() / 3600.0,
+                            was_bep_reached=pos.is_bep_reached,
+                            ai_decision="EMERGENCY_EXIT",
+                            lesson_learned=f"Terkikis rate negatif ({current_rate*100:.4f}% < 0.0%). Exit darurat untuk selamatkan modal.",
+                            pair_reputation_score=-0.4
+                        )
+                    except Exception:
+                        pass
+
                     await self.find_and_reopen_new_taker()
                 continue
 

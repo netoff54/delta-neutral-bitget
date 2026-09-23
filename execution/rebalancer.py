@@ -169,6 +169,23 @@ class AutoRebalancer:
 
                     # 2. Buka posisi pada koin baru yang lebih superior
                     if success_close:
+                        try:
+                            from core.historical_store import historical_store
+                            historical_store.record_agi_experience(
+                                event_type="ROTATION",
+                                base_asset=pos.base_asset,
+                                funding_rate=pos.last_funding_rate,
+                                harvest_usdt=pos.cumulative_funding_received,
+                                net_pnl_usdt=pos.net_pnl_usdt,
+                                holding_hours=holding_hours,
+                                was_bep_reached=pos.is_bep_reached,
+                                ai_decision=f"ROTATE_TO_{best_new_opp.base_asset}",
+                                lesson_learned=f"Rotasi berhasil dari {pos.base_asset} ke {best_new_opp.base_asset} setelah {holding_hours:.1f} jam. Keuntungan APY: +{apy_gain:.1f}%.",
+                                pair_reputation_score=0.2 if pos.is_bep_reached else 0.0
+                            )
+                        except Exception:
+                            pass
+
                         await asyncio.sleep(2)
                         await self.executor.open_delta_neutral_position(
                             opportunity=best_new_opp,

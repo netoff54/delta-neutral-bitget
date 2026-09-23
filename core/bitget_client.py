@@ -89,10 +89,15 @@ class BitgetClient:
                 for sym, r in fallback_rates.items()
             }
 
-    async def fetch_funding_rate_history(self, symbol: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """Mengambil riwayat funding rate untuk pasangan tertentu."""
+    async def fetch_funding_rate_history(
+        self,
+        symbol: str,
+        limit: int = 100,
+        since: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Mengambil riwayat funding rate untuk pasangan tertentu (hingga 7 hari ke belakang)."""
         try:
-            return await self.client.fetch_funding_rate_history(symbol, limit=limit)
+            return await self.client.fetch_funding_rate_history(symbol, since=since, limit=limit)
         except Exception as e:
             log.warning(f"Gagal mengambil riwayat funding rate untuk {symbol}: {e}")
             return []

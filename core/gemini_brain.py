@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any, List
 from config.settings import settings
 from utils.logger import log
 from core.models import DeltaNeutralPosition, Opportunity
+from core.historical_store import historical_store
 
 class GeminiBrain:
     """
@@ -78,26 +79,36 @@ class GeminiBrain:
 
     def get_accumulated_knowledge_context(self) -> str:
         """
-        Merangkum pengalaman masa lalu menjadi konteks Few-Shot untuk prompt Gemini.
-        Ini memungkinkan AI mengingat performa koin-koin sebelumnya.
+        Merangkum pengalaman masa lalu & indeks reputasi koin dari SQLite menjadi konteks Few-Shot.
+        Ini memungkinkan AI mengingat performa koin-koin sebelumnya secara akurat.
         """
-        if not self.memory:
-            return "Belum ada riwayat pembelajaran sebelumnya. Ini adalah siklus awal."
+        try:
+            reputations = historical_store.get_all_pair_reputations()
+        except Exception:
+            reputations = {}
+
+        rep_lines = []
+        for coin, score in list(reputations.items())[:5]:
+            status = "SANGAT BAIK" if score >= 0.7 else ("BAIK" if score >= 0.4 else "BERISIKO")
+            rep_lines.append(f"- Reputasi {coin}: Skor {score:+.2f} ({status})")
 
         harvest_memories = [m for m in self.memory if m.get("event_type") == "HARVEST_LEARNING"][-5:]
-        if not harvest_memories:
-            return "Belum ada riwayat panen funding fee sebelumnya."
+        context_lines = []
+        if rep_lines:
+            context_lines.append("Indeks Reputasi Koin Berdasarkan Riwayat Nyata:")
+            context_lines.extend(rep_lines)
 
-        context_lines = ["Riwayat Pembelajaran & Pengalaman Masa Lalu:"]
-        for idx, m in enumerate(harvest_memories, 1):
-            coin = m.get("base_asset", "?")
-            rate = m.get("current_funding_rate", 0.0) * 100
-            profit = m.get("harvest_profit_usdt", 0.0)
-            pnl = m.get("net_pnl_usdt", 0.0)
-            lesson = m.get("lesson_learned", m.get("insight", ""))[:120]
-            context_lines.append(f"{idx}. [{coin}] Rate: {rate:+.4f}%, Profit: +${profit:.4f}, Net PnL: ${pnl:+.4f} | Catatan: {lesson}")
+        if harvest_memories:
+            context_lines.append("\nRiwayat Pembelajaran & Panen Terkini:")
+            for idx, m in enumerate(harvest_memories, 1):
+                coin = m.get("base_asset", "?")
+                rate = m.get("current_funding_rate", 0.0) * 100
+                profit = m.get("harvest_profit_usdt", 0.0)
+                pnl = m.get("net_pnl_usdt", 0.0)
+                lesson = m.get("lesson_learned", m.get("insight", ""))[:120]
+                context_lines.append(f"{idx}. [{coin}] Rate: {rate:+.4f}%, Profit: +${profit:.4f}, Net PnL: ${pnl:+.4f} | Catatan: {lesson}")
 
-        return "\n".join(context_lines)
+        return "\n".join(context_lines) if context_lines else "Belum ada riwayat pembelajaran sebelumnya. Ini adalah siklus awal."
 
     def get_quota_status(self) -> Dict[str, Any]:
         """Mengembalikan status kuota dan alokasi 50% kapasitas harian Gemini AGI."""
@@ -234,6 +245,24 @@ class GeminiBrain:
         self.memory.append(memory_entry)
         self.save_memory()
 
+        # Rekam ke database SQLite AGI Experience & Pair Reputation
+        try:
+            historical_store.record_agi_experience(
+                event_type="HARVEST",
+                base_asset=pos.base_asset,
+                funding_rate=current_rate,
+                harvest_usdt=harvest_amount_usdt,
+                net_pnl_usdt=pos.net_pnl_usdt,
+                holding_hours=holding_hours,
+                was_bep_reached=pos.is_bep_reached,
+                ai_decision="HOLD_PANEN",
+                lesson_learned=ai_response,
+                tactical_rule=ai_response[:100],
+                pair_reputation_score=0.1
+            )
+        except Exception as e:
+            log.debug(f"Gagal rekam AGI experience ke SQLite: {e}")
+
         log.info(f"🧠 [Gemini AGI Continuous Learning]:\n{ai_response}")
         return memory_entry
 
@@ -244,8 +273,8 @@ class GeminiBrain:
     ) -> Optional[Opportunity]:
         """
         Seleksi Taker Cerdas AGI:
-        Membandingkan peluang teratas pasar Bitget dengan memadukan skor kuantitatif
-        dan memori pengalaman masa lalu untuk memilih koin yang paling konsisten & aman.
+        Membandingkan peluang teratas pasar Bitget dengan memadukan skor kuantitatif,
+        analisis historis 7 hari, biaya amortisasi taker, dan memori reputasi masa lalu.
         """
         eligible = [o for o in opportunities if o.is_eligible]
         if not eligible:
@@ -259,21 +288,41 @@ class GeminiBrain:
 
         candidates_summary = []
         for o in top_candidates:
+            h7d_info = ""
+            if o.historical_7d_stats:
+                h7d = o.historical_7d_stats
+                h7d_info = (
+                    f" | 7D Yield: {h7d.seven_day_cumulative_yield_pct:+.2f}% ({h7d.seven_day_apy_pct:.1f}% APY) | "
+                    f"7D Flips: {h7d.negative_flip_count}x | Decay: {h7d.decay_trend} | "
+                    f"Taker Impas: {h7d.taker_fee_recovery_hours:.1f}h | Skor 7D: {h7d.historical_quality_score:.1f}"
+                )
+            
+            try:
+                rep = historical_store.get_pair_reputation(o.base_asset)
+                rep_str = f" | Reputasi AI: {rep['reputation_score']:+.2f}"
+            except Exception:
+                rep_str = ""
+
             candidates_summary.append(
                 f"- {o.base_asset}: Rate {o.current_funding_rate*100:.4f}%/{o.funding_interval_hours}h | "
                 f"Net APY: {o.net_apy_percent:.1f}% | Prediksi Next: {o.predicted_next_funding_rate*100:.4f}% | "
                 f"Konsistensi: {o.consistency_score_percent:.0f}% | Tren: {o.funding_trend} | "
                 f"Vol Perp: ${o.perp_volume_24h/1e6:.1f}M"
+                f"{h7d_info}{rep_str}"
             )
 
         prompt = (
-            f"Anda adalah AGI Pengambil Keputusan Seleksi Koin Delta-Neutral.\n\n"
+            f"Anda adalah Chief Investment Officer (CIO) Delta-Neutral Quantitative Hedge Fund Bitget.\n\n"
             f"{knowledge_context}\n\n"
             f"Modal Tersedia: ${capital_usdt:.2f} USDT (Leverage 2x)\n"
-            f"Kandidat Pasar Teratas:\n" + "\n".join(candidates_summary) + "\n\n"
-            f"Tugas: Tentukan SATU koin terbaik yang paling konsisten positif, memiliki likuiditas aman, "
-            f"dan meminimalkan risiko pembalikan funding rate negatif.\n"
-            f"Format jawaban: 'PILIH: [KOIN]' diikuti alasan 1 kalimat."
+            f"Kandidat Pasar Teratas (Dilengkapi Analisis Historis 7 Hari & Biaya Taker):\n"
+            + "\n".join(candidates_summary) + "\n\n"
+            f"Prinsip Keputusan Delta-Neutral Profesional:\n"
+            f"1. Utamakan koin dengan 7D Cumulative Yield konsisten dan Zero-Flip (0x rate negatif dalam 7 hari).\n"
+            f"2. Pastikan biaya taker (spot + perp) cepat terbayar dari dividen funding (Taker Impas < 48 jam).\n"
+            f"3. Waspadai koin dengan tren Decay tinggi atau riwayat reputasi AI yang rendah.\n\n"
+            f"Tugas: Tentukan SATU koin terbaik yang paling konsisten positif, aman dari risiko flip, dan berdaya hasil tinggi.\n"
+            f"Format jawaban: 'PILIH: [KOIN]' diikuti alasan 1 kalimat berbasis data kuantitatif."
         )
 
         ai_response = await self.call_gemini(prompt)
@@ -427,6 +476,12 @@ class GeminiBrain:
         perp_drift = ((pos.perp_leg.current_price - pos.perp_leg.entry_price) / max(1e-6, pos.perp_leg.entry_price)) * 100
         basis_spread = spot_drift - perp_drift
 
+        try:
+            rep = historical_store.get_pair_reputation(pos.base_asset)
+            rep_text = f"Reputasi AI: {rep['reputation_score']:+.2f} (Panen Sukses: {rep['successful_harvests']}x, Exit Darurat: {rep['emergency_exits']}x)"
+        except Exception:
+            rep_text = "Reputasi AI: Netral"
+
         top_alts = []
         for o in top_opportunities[:3]:
             if o.base_asset != pos.base_asset:
@@ -449,6 +504,7 @@ class GeminiBrain:
             f"   - Net PnL Riil: ${pos.net_pnl_usdt:+.4f} USDT ({'BEP TERCAPAI' if pos.is_bep_reached else 'MENUJU BEP'})\n"
             f"   - Margin Ratio: {pos.current_margin_ratio*100:.1f}% (Batas Bahaya: 75%)\n"
             f"   - Countdown Menuju Settlement: {market_countdown_minutes if market_countdown_minutes is not None else '?'} menit\n"
+            f"   - Rekam Jejak Koin: {rep_text}\n"
             f"2. Pasar Alternatif: {alts_str}\n"
             f"3. Konteks Pengalaman Historis:\n{memory_ctx}\n\n"
             f"Instruksi: Sebagai Chief Risk Officer AI, tentukan keputusan taktis paling bijak saat ini. "
@@ -487,6 +543,22 @@ class GeminiBrain:
                         "insight": decision.get("tactical_guidance")
                     })
                     self.save_memory()
+
+                    try:
+                        historical_store.record_agi_experience(
+                            event_type=f"TACTICAL_{decision.get('action')}",
+                            base_asset=pos.base_asset,
+                            funding_rate=pos.last_funding_rate,
+                            harvest_usdt=0.0,
+                            net_pnl_usdt=pos.net_pnl_usdt,
+                            holding_hours=(datetime.now(timezone.utc) - pos.entry_time.replace(tzinfo=timezone.utc) if pos.entry_time.tzinfo is None else pos.entry_time).total_seconds() / 3600.0,
+                            was_bep_reached=pos.is_bep_reached,
+                            ai_decision=decision.get("action"),
+                            lesson_learned=decision.get("tactical_guidance"),
+                            pair_reputation_score=-0.2 if decision.get("action") == "EMERGENCY_UNWIND" else 0.0
+                        )
+                    except Exception:
+                        pass
             except Exception as e:
                 log.debug(f"[GeminiBrain] Error parsing JSON ground truth: {e}")
                 self.latest_insight = raw[:120]

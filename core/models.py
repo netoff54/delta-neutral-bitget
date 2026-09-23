@@ -41,12 +41,47 @@ class Opportunity(BaseModel):
     funding_trend: str = Field(default="STABLE", description="'UP', 'DOWN', 'STABLE'")
     composite_performance_score: float = Field(default=0.0, description="Skor ranking komposit berbasis data")
 
+    # 7-Day In-Depth Historical Telemetry & Taker Quality
+    historical_7d_stats: Optional["HistoricalFundingStats"] = None
+
     break_even_cycles: int = Field(..., description="Jumlah siklus funding untuk balik modal fee")
     break_even_hours: float = Field(..., description="Jam yang dibutuhkan untuk mencapai break-even")
     
     is_eligible: bool = Field(default=False)
     rejection_reason: Optional[str] = None
     scanned_at: datetime = Field(default_factory=datetime.utcnow)
+
+class HistoricalFundingStats(BaseModel):
+    seven_day_cumulative_yield_pct: float = Field(default=0.0, description="Total akumulasi yield funding dalam 7 hari (%)")
+    seven_day_apy_pct: float = Field(default=0.0, description="Annualized APY berdasarkan 7 hari (%)")
+    positive_consistency_pct: float = Field(default=100.0, description="Persentase siklus positif 7 hari (%)")
+    negative_flip_count: int = Field(default=0, description="Berapa kali rate <= 0% dalam 7 hari")
+    rate_std_dev: float = Field(default=0.0, description="Standar deviasi / volatilitas rate 7 hari")
+    decay_trend: str = Field(default="STABLE", description="'ACCELERATING', 'DECAYING', 'STABLE'")
+    taker_fee_recovery_cycles: int = Field(default=1, description="Estimasi siklus rata-rata untuk menutup biaya taker")
+    taker_fee_recovery_hours: float = Field(default=8.0, description="Estimasi jam untuk menutup biaya taker")
+    historical_quality_score: float = Field(default=0.0, description="Skor kualitas kuantitatif komposit 7 hari (0-100)")
+    sample_count: int = Field(default=0, description="Jumlah data settlement funding yang dianalisis")
+
+class TakerSnapshot(BaseModel):
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    base_asset: str
+    spot_symbol: str
+    perp_symbol: str
+    spot_price: float
+    perp_price: float
+    basis_spread_percent: float
+    current_funding_rate: float
+    predicted_next_rate: float
+    funding_interval_hours: int = 8
+    spot_taker_fee_pct: float
+    perp_taker_fee_pct: float
+    round_trip_fee_pct: float
+    break_even_cycles: int
+    break_even_hours: float
+    composite_score: float
+    is_eligible: bool
+    rejection_reason: Optional[str] = None
 
 class PositionLeg(BaseModel):
     market_type: str = Field(..., description="'spot' atau 'perp'")

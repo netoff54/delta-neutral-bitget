@@ -4,10 +4,12 @@ from typing import List, Dict, Any, Optional
 
 from config.settings import settings
 from utils.logger import log
-from core.models import Opportunity
+from core.models import Opportunity, TakerSnapshot
 from core.bitget_client import BitgetClient, bitget_client
+from core.historical_store import historical_store
 from analytics.fee_calculator import FeeCalculator, fee_calculator
 from analytics.performance_scorer import PerformanceScorer, performance_scorer
+from analytics.funding_history_analyzer import funding_history_analyzer
 
 class OpportunityFinder:
     """
@@ -154,24 +156,84 @@ class OpportunityFinder:
 
             opportunities.append(opp)
 
+            # Rekam snapshot taker potensial ke SQLite store 7 hari
+            try:
+                snap = TakerSnapshot(
+                    base_asset=opp.base_asset,
+                    spot_symbol=opp.spot_symbol,
+                    perp_symbol=opp.perp_symbol,
+                    spot_price=opp.spot_price,
+                    perp_price=opp.perp_price,
+                    basis_spread_percent=opp.basis_spread_percent,
+                    current_funding_rate=opp.current_funding_rate,
+                    predicted_next_rate=0.0,
+                    funding_interval_hours=opp.funding_interval_hours,
+                    spot_taker_fee_pct=self.calculator.spot_taker_fee * 100.0,
+                    perp_taker_fee_pct=self.calculator.perp_taker_fee * 100.0,
+                    round_trip_fee_pct=opp.fee_breakdown.total_fee_percent,
+                    break_even_cycles=opp.break_even_cycles,
+                    break_even_hours=opp.break_even_hours,
+                    composite_score=0.0,
+                    is_eligible=opp.is_eligible,
+                    rejection_reason=opp.rejection_reason
+                )
+                historical_store.record_taker_snapshot(snap)
+            except Exception as e:
+                log.debug(f"Gagal rekam snapshot taker {opp.base_asset}: {e}")
+
         # Urutkan sementara berdasarkan Net APY untuk memilih kandidat yang dianalisis mendalam
         opportunities.sort(key=lambda x: (x.is_eligible, x.net_apy_percent), reverse=True)
 
-        # Analisis mendalam (10 siklus historis & prediktif) untuk kandidat teratas
+        # Analisis mendalam (10 siklus historis, 7-hari rolling data, & prediktif) untuk kandidat teratas
         top_candidates = [o for o in opportunities if o.is_eligible][:10]
         if not top_candidates:
             # Jika tidak ada yang lolos kriteria keras, ambil top 5 untuk dianalisis
             top_candidates = opportunities[:5]
 
         for opp in top_candidates:
-            history = await self.client.fetch_funding_rate_history(
-                opp.perp_symbol,
-                limit=settings.PREDICTIVE_HORIZON_CYCLES
-            )
-            opp.historical_funding_rates = [float(h["fundingRate"]) for h in history if h.get("fundingRate") is not None]
+            # 1. Ambil riwayat dari SQLite store 7 hari
+            stored_7d = historical_store.get_funding_history(opp.perp_symbol, days=7)
+            
+            # Jika data di SQLite belum lengkap (< 14 data siklus), lakukan backfill dari API Bitget
+            if len(stored_7d) < 14:
+                fetched_history = await self.client.fetch_funding_rate_history(
+                    opp.perp_symbol,
+                    limit=100
+                )
+                if fetched_history:
+                    historical_store.record_funding_rates(
+                        opp.perp_symbol,
+                        fetched_history,
+                        interval_hours=opp.funding_interval_hours
+                    )
+                    stored_7d = historical_store.get_funding_history(opp.perp_symbol, days=7)
+            else:
+                # Ambil histori siklus terbaru jika perlu
+                fetched_history = await self.client.fetch_funding_rate_history(
+                    opp.perp_symbol,
+                    limit=settings.PREDICTIVE_HORIZON_CYCLES
+                )
+                if fetched_history:
+                    historical_store.record_funding_rates(
+                        opp.perp_symbol,
+                        fetched_history,
+                        interval_hours=opp.funding_interval_hours
+                    )
+                    stored_7d = historical_store.get_funding_history(opp.perp_symbol, days=7)
 
-            # Analisis data historis
-            hist_stats = performance_scorer.analyze_history(history)
+            opp.historical_funding_rates = [
+                float(h["funding_rate"]) if "funding_rate" in h else float(h.get("fundingRate", 0.0))
+                for h in stored_7d[-settings.PREDICTIVE_HORIZON_CYCLES:]
+            ] if stored_7d else []
+
+            # Format data untuk performance_scorer (10 siklus terakhir)
+            history_scorer_input = [
+                {"fundingRate": float(h["funding_rate"]) if "funding_rate" in h else float(h.get("fundingRate", 0.0))}
+                for h in stored_7d[-settings.PREDICTIVE_HORIZON_CYCLES:]
+            ] if stored_7d else []
+
+            # Analisis data historis siklus jangka pendek
+            hist_stats = performance_scorer.analyze_history(history_scorer_input)
             opp.historical_mean_rate = hist_stats["mean_rate"]
             opp.historical_std_rate = hist_stats["std_rate"]
             opp.consistency_score_percent = hist_stats["consistency_pct"]
@@ -186,8 +248,19 @@ class OpportunityFinder:
             )
             opp.predicted_next_funding_rate = pred_rate
 
+            # 2. Analisis Kuantitatif Historis 7 Hari Mendalam (Rolling 7-Day Analytics)
+            stats_7d = funding_history_analyzer.analyze_7d_history(
+                symbol=opp.perp_symbol,
+                records=stored_7d,
+                spot_taker_fee_pct=self.calculator.spot_taker_fee * 100.0,
+                perp_taker_fee_pct=self.calculator.perp_taker_fee * 100.0,
+                funding_interval_hours=opp.funding_interval_hours,
+                basis_spread_percent=opp.basis_spread_percent
+            )
+            opp.historical_7d_stats = stats_7d
+
             # Hitung skor performa komposit berbasis data (disesuaikan dengan interval 4h/8h/1h)
-            opp.composite_performance_score = performance_scorer.calculate_composite_score(
+            base_comp_score = performance_scorer.calculate_composite_score(
                 predicted_next_rate=pred_rate,
                 historical_mean=opp.historical_mean_rate,
                 consistency_pct=opp.consistency_score_percent,
@@ -197,13 +270,33 @@ class OpportunityFinder:
                 funding_interval_hours=opp.funding_interval_hours
             )
 
-            # Jika prediksi rate ke depan negatif, jangan izinkan buka posisi
+            # Integrasikan skor kualitas historis 7 hari (Bobot: 60% jangka pendek + 40% kualitas 7 hari)
+            if stats_7d and stats_7d.historical_quality_score > 0:
+                opp.composite_performance_score = round(
+                    (base_comp_score * 0.6) + (stats_7d.historical_quality_score * 0.4),
+                    1
+                )
+            else:
+                opp.composite_performance_score = base_comp_score
+
+            # Proteksi Delta Neutral Profesional:
+            # Jika prediksi rate ke depan negatif, tolak
             if pred_rate <= 0:
                 opp.is_eligible = False
                 opp.rejection_reason = f"Prediksi funding rate ke depan negatif ({pred_rate*100:.4f}%)"
             elif opp.consistency_score_percent < 70.0:
                 opp.is_eligible = False
                 opp.rejection_reason = f"Konsistensi historis rendah ({opp.consistency_score_percent:.0f}% < 70%)"
+            # Jika dalam 7 hari koin sering berbalik negatif (> 2 kali flip)
+            elif stats_7d and stats_7d.negative_flip_count > 2:
+                opp.is_eligible = False
+                opp.rejection_reason = f"Risiko flip 7 hari tinggi ({stats_7d.negative_flip_count}x rate negatif)"
+
+        # Bersihkan data lama > 7 hari secara berkala (Auto-pruning)
+        try:
+            historical_store.prune_older_than_days(days=7)
+        except Exception:
+            pass
 
         # Urutkan final: Mengutamakan yang Eligible dengan Composite Performance Score tertinggi
         opportunities.sort(

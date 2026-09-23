@@ -19,6 +19,8 @@ ENV/
 bot.log
 tests/test_compounding_state.json
 data/test_*.json
+*.db
+data/*.db
 scratch/
 
 # IDE & OS files
