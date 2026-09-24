@@ -15,8 +15,8 @@ class BotSettings(BaseSettings):
     BITGET_API_SECRET: str = Field(default="", description="Bitget API Secret")
     BITGET_API_PASSPHRASE: str = Field(default="", description="Bitget API Passphrase")
 
-    # Execution Mode
-    DRY_RUN: bool = Field(default=True, description="Dry-run simulation mode")
+    # Execution Mode - Default FALSE (gunakan data REAL dari Bitget, BUKAN simulasi)
+    DRY_RUN: bool = Field(default=False, description="Dry-run simulation mode - SELALU False di produksi")
 
     # Capital Allocation & Account Balance Strategy
     USE_ALL_AVAILABLE_BALANCE: bool = Field(default=True, description="Gunakan seluruh saldo trading cair yang ada di Bitget")
@@ -24,10 +24,12 @@ class BotSettings(BaseSettings):
     MAX_CONCURRENT_POSITIONS: int = Field(default=1, ge=1, le=5, description="Jumlah maksimal pasangan aktif sekaligus (default 1 untuk alokasi maksimal)")
     LIQUID_SAFETY_BUFFER_PERCENT: float = Field(default=0.02, description="Buffer keamanan 2% agar saldo tidak minus karena potongan fee")
     PROTECT_BITGET_EARN: bool = Field(default=True, description="Proteksi mutlak dana di fitur Bitget Earn (Savings/Staking) agar tidak disentuh")
-    SIMULATED_BALANCE_USDT: float = Field(default=100.0, description="Saldo simulasi trading untuk mode dry-run")
-    SIMULATED_OTC_BALANCE_USDT: float = Field(default=50.0, description="Saldo Akun OTC simulasi untuk mode dry-run")
+    # CATATAN: SIMULATED_* hanya untuk keperluan test unit, TIDAK digunakan saat DRY_RUN=False
+    SIMULATED_BALANCE_USDT: float = Field(default=0.0, description="[TEST ONLY] Saldo simulasi trading - TIDAK digunakan saat live")
+    SIMULATED_OTC_BALANCE_USDT: float = Field(default=0.0, description="[TEST ONLY] Saldo OTC simulasi - TIDAK digunakan saat live")
     MAX_CAPITAL_PER_POSITION_USDT: Optional[float] = Field(default=None, description="Manual override alokasi per posisi (None = alokasi dinamis seluruh modal cair)")
-    INITIAL_SEED_CAPITAL_USDT: float = Field(default=20.0, description="Modal awal fallback")
+    # INITIAL_SEED_CAPITAL_USDT tidak lagi digunakan - modal selalu dari saldo REAL Bitget
+    INITIAL_SEED_CAPITAL_USDT: float = Field(default=0.0, description="[DEPRECATED] Tidak lagi digunakan - modal dari saldo REAL Bitget")
     TOTAL_MAX_CAPITAL_USDT: Optional[float] = Field(default=None, description="Batas atas total modal (opsional)")
     LEVERAGE: int = Field(default=1, ge=1, le=2, description="Futures short leverage (Maksimal 1x)")
     MIN_24H_VOLUME_USDT: float = Field(default=500000.0, description="Minimum 24h volume for liquidity check ($500k)")
@@ -50,6 +52,8 @@ class BotSettings(BaseSettings):
     AUTO_ROTATE_OPPORTUNITIES: bool = Field(default=True, description="Otomatis rotasi modal ke pasangan baru dengan performa lebih tinggi")
     MIN_ROTATION_APY_DIFF: float = Field(default=12.0, description="Minimal selisih Net APY (%) untuk memicu rotasi modal")
     MIN_HOLDING_HOURS_BEFORE_ROTATION: float = Field(default=16.0, description="Minimal jam holding sebelum boleh dirotasi")
+    # Profit minimal yang harus terakumulasi (dalam USDT) sebelum rotasi diizinkan
+    MIN_PROFIT_BEFORE_ROTATION_USDT: float = Field(default=0.5, description="Profit minimum (USDT) yang harus diraih sebelum rotasi agar modal berkembang nyata")
 
     # Yield Vault (Profit Protection - Jangan Sentuh Uang Hasil Earn)
     VAULT_LOCK_PROFITS: bool = Field(default=True, description="Kunci seluruh profit hasil earn agar tidak dipakai trading")
@@ -78,6 +82,9 @@ class BotSettings(BaseSettings):
     MONITOR_INTERVAL_SECONDS: int = Field(default=60, description="Interval between position health checks (1 min)")
     AI_MAX_DAILY_CALLS: int = Field(default=720, description="Maksimal panggilan AI harian (48% dari kuota 1500 RPD Google)")
     AI_REALTIME_EVALUATION: bool = Field(default=True, description="Evaluasi telemetri pasar real-time setiap siklus 2 menit")
+
+    # PnL Multi-Timeframe Analytics
+    PNL_TIMEFRAMES_DAYS: list = Field(default=[1, 7, 30, 365], description="Timeframe PnL dalam hari: [1D, 1W, 1M, 1Y]")
 
     # Database Configuration (SQLite default / PostgreSQL cloud persistence)
     DATABASE_URL: Optional[str] = Field(

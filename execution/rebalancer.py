@@ -17,8 +17,8 @@ class AutoRebalancer:
     1. Rebalancing Delta: Memastikan delta Spot Long vs Futures Short tetap mendekati 0.
     2. Dynamic Opportunity Rotation ('Mencari Taker Lain yang Memiliki Potensial'):
        Secara berkala membandingkan performa posisi aktif dengan peluang terbaru di pasar.
-       Jika yield posisi aktif meredup dan muncul peluang baru dengan keunggulan yield signifikan,
-       bot otomatis merotasi modal ke pasangan baru tersebut.
+       PENTING: Rotasi HANYA terjadi jika ada keuntungan nyata di atas BEP (bukan hanya BEP=0),
+       agar modal benar-benar tumbuh dan tidak hanya berputar tanpa pertumbuhan.
     """
 
     def __init__(
@@ -83,8 +83,22 @@ class AutoRebalancer:
         capital_per_position: Optional[float] = None
     ):
         """
-        Evaluasi rotasi peluang:
-        Jika ada pasangan baru dengan Net APY jauh lebih tinggi dibanding posisi aktif yang sedang di-hold.
+        Evaluasi rotasi peluang dengan logika pertumbuhan modal yang benar:
+
+        FILOSOFI ROTASI YANG MENGHASILKAN PERTUMBUHAN NYATA:
+        =====================================================
+        Masalah umum: Setelah BEP (Net PnL = 0), langsung rotasi → bayar fee lagi → 
+        uang hanya berputar tanpa berkembang.
+
+        Solusi: Rotasi hanya dilakukan jika:
+        1. BEP sudah tercapai DAN
+        2. Ada profit NYATA di atas BEP (minimal MIN_PROFIT_BEFORE_ROTATION_USDT) DAN
+        3. Pasar baru harus jauh lebih baik (MIN_ROTATION_APY_DIFF) DAN
+        4. Funding rate koin baru harus STABIL (konsistensi > 75%) DAN
+        5. Estimasi waktu BEP di koin baru < waktu yang sudah diraih sekarang
+        
+        Dengan cara ini modal berkembang: Profit dari koin lama dijaga, 
+        dan koin baru menghasilkan profit lebih tinggi.
         """
         if not settings.AUTO_ROTATE_OPPORTUNITIES:
             return
@@ -107,6 +121,7 @@ class AutoRebalancer:
         # Jangan rotasi ke koin yang sama
         for pos in active_positions:
             if pos.base_asset == best_new_opp.base_asset:
+                log.info(f"[Rotasi] Koin terbaik saat ini sudah sama dengan posisi aktif ({pos.base_asset}). Skip rotasi.")
                 continue
 
             holding_hours = safe_hours_passed(pos.entry_time)
@@ -114,83 +129,124 @@ class AutoRebalancer:
             # Sinkronisasi status PnL riil dan funding fee dari ledger
             await self.client.update_position_live_pnl(pos)
 
-            # Syarat rotasi:
-            # 1. Sudah di-hold minimal jam holding yang ditentukan (misal 16 jam)
-            # 2. Posisi HARUS SUDAH BEP (Net PnL > 0) agar tidak terjadi fee churn
-            # 3. Keunggulan APY pasangan baru melampaui ambang batas MIN_ROTATION_APY_DIFF
-            if holding_hours >= settings.MIN_HOLDING_HOURS_BEFORE_ROTATION:
-                if pos.net_pnl_usdt <= 0.0 and not pos.is_bep_reached:
+            # ================================================================
+            # SYARAT ROTASI KETAT - Mencegah Fee Churn & Memastikan Pertumbuhan
+            # ================================================================
+
+            # Syarat 1: Minimum holding time
+            if holding_hours < settings.MIN_HOLDING_HOURS_BEFORE_ROTATION:
+                log.info(
+                    f"⏳ [Rotasi Ditunda] {pos.base_asset}: Baru {holding_hours:.1f} jam "
+                    f"(Minimum: {settings.MIN_HOLDING_HOURS_BEFORE_ROTATION}h)"
+                )
+                continue
+
+            # Syarat 2: HARUS sudah BEP (Net PnL > 0)
+            if not pos.is_bep_reached or pos.net_pnl_usdt <= 0.0:
+                log.info(
+                    f"⏳ [Rotasi Ditunda] {pos.base_asset} belum BEP "
+                    f"(Net PnL: ${pos.net_pnl_usdt:+.4f} | Real Funding: +${pos.realized_funding_usdt:.4f}). "
+                    f"Menunggu funding fee menutupi seluruh biaya round-trip sebelum rotasi."
+                )
+                continue
+
+            # Syarat 3: HARUS ada profit surplus di atas BEP (KUNCI PERTUMBUHAN)
+            # Ini memastikan setelah rotasi, modal bersih tetap lebih besar dari modal awal
+            min_profit_required = getattr(settings, "MIN_PROFIT_BEFORE_ROTATION_USDT", 0.5)
+            if pos.net_pnl_usdt < min_profit_required:
+                log.info(
+                    f"⏳ [Rotasi Ditunda] {pos.base_asset}: Profit belum mencukupi untuk rotasi. "
+                    f"(Net PnL: ${pos.net_pnl_usdt:+.4f} | Minimum profit rotasi: ${min_profit_required:.4f} USDT). "
+                    f"Tetap hold untuk akumulasi profit lebih banyak dulu."
+                )
+                continue
+
+            # Syarat 4: Cek konsistensi koin baru harus > 75%
+            if best_new_opp.consistency_score_percent < 75.0:
+                log.info(
+                    f"⚠️ [Rotasi Ditunda] Kandidat {best_new_opp.base_asset} konsistensinya kurang "
+                    f"({best_new_opp.consistency_score_percent:.0f}% < 75%). Menunggu koin lebih stabil."
+                )
+                continue
+
+            # Syarat 5: APY koin baru harus lebih baik signifikan
+            old_opp = next((o for o in opportunities if o.base_asset == pos.base_asset), None)
+            old_apy = old_opp.net_apy_percent if old_opp else 0.0
+            apy_gain = best_new_opp.net_apy_percent - old_apy
+
+            if apy_gain < settings.MIN_ROTATION_APY_DIFF:
+                log.info(
+                    f"📊 [Rotasi Tidak Layak] Keunggulan APY {best_new_opp.base_asset} ({apy_gain:+.1f}%) "
+                    f"< Ambang rotasi ({settings.MIN_ROTATION_APY_DIFF}%). "
+                    f"Hold {pos.base_asset} lebih menguntungkan saat ini."
+                )
+                continue
+
+            # Syarat 6: Estimasi BEP koin baru harus < 48 jam
+            new_bep_hours = best_new_opp.break_even_hours
+            if new_bep_hours > 48.0:
+                log.info(
+                    f"⚠️ [Rotasi Ditunda] BEP koin baru {best_new_opp.base_asset} terlalu lama "
+                    f"({new_bep_hours:.1f}h > 48h). Tetap hold {pos.base_asset}."
+                )
+                continue
+
+            # Konsultasi AI Brain sebelum eksekusi rotasi
+            if settings.ENABLE_AI_BRAIN:
+                ai_approved = await gemini_brain.evaluate_rotation_candidate(
+                    current_pos=pos,
+                    candidate_opp=best_new_opp
+                )
+                if not ai_approved:
                     log.info(
-                        f"⏳ [Rotasi Ditunda] {pos.base_asset} belum mencapai BEP "
-                        f"(Net PnL: ${pos.net_pnl_usdt:+.4f} | Real Funding: +${pos.realized_funding_usdt:.4f} | "
-                        f"Unrealized PnL: ${pos.unrealized_pnl_usdt:+.4f}). "
-                        f"Menunggu akumulasi funding fee menutupi trading fee sebelum rotasi."
+                        f"✋ [Rotasi Ditahan oleh AI Brain] Gemini AI menyarankan tetap hold {pos.base_asset} "
+                        f"karena yield saat ini masih optimal dan meminimalkan biaya fee baru."
                     )
                     continue
 
-                # Perkirakan current net yield dari posisi lama
-                old_rate = pos.perp_leg.current_price  # fallback
-                # Ambil funding rate terkini koin lama
-                old_opp = next((o for o in opportunities if o.base_asset == pos.base_asset), None)
-                old_apy = old_opp.net_apy_percent if old_opp else 0.0
+            # ✅ Semua syarat terpenuhi - Eksekusi Rotasi
+            rotation_msg = (
+                f"🔄 *[ROTASI PELUANG TERDETEKSI]*\n"
+                f"Menutup: `{pos.base_asset}` (Net APY: `{old_apy:.1f}%`)\n"
+                f"Rotasi ke: `{best_new_opp.base_asset}` (Net APY: `{best_new_opp.net_apy_percent:.1f}%`)\n"
+                f"Keuntungan Yield: `+{apy_gain:.1f}% APY`\n"
+                f"Profit yang Sudah Diraih: `+${pos.net_pnl_usdt:.4f} USDT` (akan dikunci ke modal)\n"
+                f"BEP Koin Baru: `{new_bep_hours:.1f} jam`\n"
+                f"Holding Hours: `{holding_hours:.1f} jam`"
+            )
+            log.info(rotation_msg.replace("*", "").replace("`", ""))
+            await notifier.send_message(rotation_msg)
 
-                apy_gain = best_new_opp.net_apy_percent - old_apy
+            # 1. Unwind posisi lama
+            success_close = await self.executor.close_delta_neutral_position(
+                position_id=pos.position_id,
+                reason=f"Rotasi Peluang ke {best_new_opp.base_asset} (+{apy_gain:.1f}% APY | Profit: +${pos.net_pnl_usdt:.4f})"
+            )
 
-                if apy_gain >= settings.MIN_ROTATION_APY_DIFF:
-                    # Konsultasi AI Brain sebelum eksekusi rotasi
-                    from core.gemini_brain import gemini_brain
-                    if settings.ENABLE_AI_BRAIN:
-                        ai_approved = await gemini_brain.evaluate_rotation_candidate(
-                            current_pos=pos,
-                            candidate_opp=best_new_opp
-                        )
-                        if not ai_approved:
-                            log.info(
-                                f"✋ [Rotasi Ditahan oleh AI Brain] Gemini AI menyarankan tetap hold {pos.base_asset} "
-                                f"karena yield saat ini masih optimal dan meminimalkan biaya fee baru."
-                            )
-                            continue
-
-                    rotation_msg = (
-                        f"🔄 *[ROTASI PELUANG TERDETEKSI]*\n"
-                        f"Menutup: `{pos.base_asset}` (Net APY: `{old_apy:.1f}%`)\n"
-                        f"Rotasi ke: `{best_new_opp.base_asset}` (Net APY: `{best_new_opp.net_apy_percent:.1f}%`)\n"
-                        f"Keuntungan Yield: `+{apy_gain:.1f}% APY`\n"
-                        f"Holding Hours: `{holding_hours:.1f} jam`"
+            # 2. Buka posisi pada koin baru yang lebih superior
+            if success_close:
+                try:
+                    from core.historical_store import historical_store
+                    historical_store.record_agi_experience(
+                        event_type="ROTATION",
+                        base_asset=pos.base_asset,
+                        funding_rate=pos.last_funding_rate,
+                        harvest_usdt=pos.cumulative_funding_received,
+                        net_pnl_usdt=pos.net_pnl_usdt,
+                        holding_hours=holding_hours,
+                        was_bep_reached=pos.is_bep_reached,
+                        ai_decision=f"ROTATE_TO_{best_new_opp.base_asset}",
+                        lesson_learned=f"Rotasi berhasil dari {pos.base_asset} ke {best_new_opp.base_asset} setelah {holding_hours:.1f} jam. Profit terkunci: +${pos.net_pnl_usdt:.4f}. APY gain: +{apy_gain:.1f}%.",
+                        pair_reputation_score=0.2 if pos.is_bep_reached else 0.0
                     )
-                    log.info(rotation_msg.replace("*", "").replace("`", ""))
-                    await notifier.send_message(rotation_msg)
+                except Exception:
+                    pass
 
-                    # 1. Unwind posisi lama
-                    success_close = await self.executor.close_delta_neutral_position(
-                        position_id=pos.position_id,
-                        reason=f"Rotasi Peluang ke {best_new_opp.base_asset} (+{apy_gain:.1f}% APY)"
-                    )
-
-                    # 2. Buka posisi pada koin baru yang lebih superior
-                    if success_close:
-                        try:
-                            from core.historical_store import historical_store
-                            historical_store.record_agi_experience(
-                                event_type="ROTATION",
-                                base_asset=pos.base_asset,
-                                funding_rate=pos.last_funding_rate,
-                                harvest_usdt=pos.cumulative_funding_received,
-                                net_pnl_usdt=pos.net_pnl_usdt,
-                                holding_hours=holding_hours,
-                                was_bep_reached=pos.is_bep_reached,
-                                ai_decision=f"ROTATE_TO_{best_new_opp.base_asset}",
-                                lesson_learned=f"Rotasi berhasil dari {pos.base_asset} ke {best_new_opp.base_asset} setelah {holding_hours:.1f} jam. Keuntungan APY: +{apy_gain:.1f}%.",
-                                pair_reputation_score=0.2 if pos.is_bep_reached else 0.0
-                            )
-                        except Exception:
-                            pass
-
-                        await asyncio.sleep(2)
-                        await self.executor.open_delta_neutral_position(
-                            opportunity=best_new_opp,
-                            allocated_capital_usdt=capital_per_position
-                        )
-                        break
+                await asyncio.sleep(2)
+                await self.executor.open_delta_neutral_position(
+                    opportunity=best_new_opp,
+                    allocated_capital_usdt=capital_per_position
+                )
+                break
 
 auto_rebalancer = AutoRebalancer()

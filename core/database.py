@@ -820,4 +820,132 @@ class UnifiedDatabase:
             "pruned_snapshots": pruned_snapshots
         }
 
+    # =========================================================================
+    # PILAR 9: PNL MULTI-TIMEFRAME ANALYTICS (1D / 1W / 1M / 1Y)
+    # =========================================================================
+    def get_pnl_for_timeframe(self, days: int) -> Dict[str, Any]:
+        """
+        Menghitung PnL portofolio untuk timeframe tertentu berdasarkan data REAL dari Bitget.
+        Membandingkan saldo gabungan awal vs saldo saat ini untuk menghitung pertumbuhan nyata.
+
+        Args:
+            days: Jumlah hari ke belakang (1=1 hari, 7=1 minggu, 30=1 bulan, 365=1 tahun)
+
+        Returns:
+            Dict dengan start_equity, current_equity, pnl_usdt, pnl_pct, funding_harvested,
+            positions_closed, avg_daily_yield
+        """
+        cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        # 1. Ambil saldo awal pada periode tersebut
+        sql_start = """
+            SELECT total_combined_equity_usdt, timestamp_utc
+            FROM combined_balance_history
+            WHERE timestamp_utc >= ?
+            ORDER BY timestamp_utc ASC LIMIT 1
+        """
+        # 2. Ambil saldo terkini
+        sql_current = """
+            SELECT total_combined_equity_usdt, timestamp_utc
+            FROM combined_balance_history
+            ORDER BY id DESC LIMIT 1
+        """
+        # 3. Hitung total funding harvested dalam periode
+        sql_harvest = """
+            SELECT COALESCE(SUM(payment_usdt), 0.0) as total_harvest
+            FROM funding_harvests
+            WHERE timestamp_utc >= ?
+        """
+        # 4. Hitung posisi yang ditutup dalam periode
+        sql_positions = """
+            SELECT COUNT(*) as closed_count, COALESCE(SUM(realized_pnl_usdt), 0.0) as total_realized_pnl
+            FROM positions
+            WHERE status = 'CLOSED' AND closed_at >= ?
+        """
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(self._format_query(sql_start), (cutoff_iso,))
+            row_start = cursor.fetchone()
+
+            cursor.execute(self._format_query(sql_current))
+            row_current = cursor.fetchone()
+
+            cursor.execute(self._format_query(sql_harvest), (cutoff_iso,))
+            row_harvest = cursor.fetchone()
+
+            cursor.execute(self._format_query(sql_positions), (cutoff_iso,))
+            row_pos = cursor.fetchone()
+
+        start_equity = float(row_start["total_combined_equity_usdt"] if row_start else 0.0)
+        current_equity = float(row_current["total_combined_equity_usdt"] if row_current else 0.0)
+        total_harvest = float(row_harvest["total_harvest"] if row_harvest else 0.0)
+        closed_count = int(row_pos["closed_count"] if row_pos else 0)
+        realized_pnl = float(row_pos["total_realized_pnl"] if row_pos else 0.0)
+
+        pnl_usdt = current_equity - start_equity
+        pnl_pct = (pnl_usdt / start_equity * 100.0) if start_equity > 0 else 0.0
+        avg_daily = pnl_usdt / days if days > 0 else 0.0
+
+        return {
+            "timeframe_days": days,
+            "timeframe_label": self._days_to_label(days),
+            "start_equity_usdt": round(start_equity, 4),
+            "current_equity_usdt": round(current_equity, 4),
+            "pnl_usdt": round(pnl_usdt, 4),
+            "pnl_pct": round(pnl_pct, 2),
+            "funding_harvested_usdt": round(total_harvest, 4),
+            "positions_closed": closed_count,
+            "realized_pnl_usdt": round(realized_pnl, 4),
+            "avg_daily_pnl_usdt": round(avg_daily, 4),
+            "annualized_yield_pct": round(pnl_pct / days * 365.0, 2) if days > 0 and start_equity > 0 else 0.0,
+            "has_data": start_equity > 0 and current_equity > 0
+        }
+
+    def get_all_pnl_timeframes(self) -> Dict[str, Any]:
+        """
+        Mengambil PnL untuk semua timeframe sekaligus: 1 Hari, 1 Minggu, 1 Bulan, 1 Tahun.
+        Menggunakan data REAL yang tersimpan dari Bitget API.
+        """
+        results = {}
+        for days in [1, 7, 30, 365]:
+            label = self._days_to_label(days)
+            results[label] = self.get_pnl_for_timeframe(days)
+
+        # Tambahkan ringkasan total keseluruhan
+        total_harvest = self.get_total_harvested_profit()
+        latest = self.get_latest_combined_balance()
+        results["all_time"] = {
+            "timeframe_label": "All Time",
+            "total_funding_harvested_usdt": round(total_harvest, 4),
+            "current_equity_usdt": float(latest.get("total_combined_equity_usdt", 0.0)) if latest else 0.0
+        }
+
+        return results
+
+    def _days_to_label(self, days: int) -> str:
+        """Konversi jumlah hari ke label yang mudah dibaca."""
+        mapping = {1: "1D", 7: "1W", 30: "1M", 365: "1Y"}
+        return mapping.get(days, f"{days}D")
+
+    def get_pnl_equity_curve(self, days: int = 30) -> List[Dict[str, Any]]:
+        """
+        Mengambil kurva ekuitas untuk periode tertentu (equity curve).
+        Berguna untuk visualisasi pertumbuhan portofolio.
+        """
+        cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        sql = """
+            SELECT timestamp_utc, total_combined_equity_usdt, spot_equity_usdt,
+                   futures_equity_usdt, otc_funding_equity_usdt, earn_savings_equity_usdt
+            FROM combined_balance_history
+            WHERE timestamp_utc >= ?
+            ORDER BY timestamp_utc ASC
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(self._format_query(sql), (cutoff_iso,))
+            rows = cursor.fetchall()
+            return [dict(r) for r in rows]
+
 db = UnifiedDatabase()

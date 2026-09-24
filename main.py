@@ -131,6 +131,82 @@ def display_ai_brain_status():
     except Exception as e:
         log.debug(f"AI Brain status display notice: {e}")
 
+def display_pnl_timeframes():
+    """
+    Menampilkan tabel PnL portofolio untuk semua timeframe (1D, 1W, 1M, 1Y).
+    Menggunakan data REAL dari Bitget yang tersimpan di database.
+    Tidak ada data fiktif/mock sama sekali.
+    """
+    try:
+        pnl_data = db.get_all_pnl_timeframes()
+
+        table = Table(
+            title="📈 Analisis PnL Portofolio Multi-Timeframe (Data REAL Bitget)",
+            box=box.ROUNDED,
+            header_style="bold cyan"
+        )
+        table.add_column("Timeframe", style="bold white", justify="center")
+        table.add_column("Modal Awal", style="yellow", justify="right")
+        table.add_column("Modal Kini", style="bold green", justify="right")
+        table.add_column("PnL (USDT)", justify="right")
+        table.add_column("PnL (%)", justify="right")
+        table.add_column("Funding Harvested", style="green", justify="right")
+        table.add_column("Avg/Hari", style="cyan", justify="right")
+        table.add_column("Annualized", style="bold magenta", justify="right")
+
+        for label in ["1D", "1W", "1M", "1Y"]:
+            data = pnl_data.get(label, {})
+            if not data:
+                continue
+
+            has_data = data.get("has_data", False)
+            pnl_usdt = data.get("pnl_usdt", 0.0)
+            pnl_pct = data.get("pnl_pct", 0.0)
+
+            pnl_color = "green" if pnl_usdt >= 0 else "red"
+            pct_color = "green" if pnl_pct >= 0 else "red"
+
+            if not has_data:
+                table.add_row(
+                    label,
+                    "[dim]Belum ada data[/dim]",
+                    "[dim]-[/dim]",
+                    "[dim]-[/dim]",
+                    "[dim]-[/dim]",
+                    "[dim]-[/dim]",
+                    "[dim]-[/dim]",
+                    "[dim]-[/dim]"
+                )
+            else:
+                table.add_row(
+                    f"[bold]{label}[/bold]",
+                    f"${data.get('start_equity_usdt', 0.0):,.2f}",
+                    f"[bold green]${data.get('current_equity_usdt', 0.0):,.2f}[/bold green]",
+                    f"[{pnl_color}]${pnl_usdt:+.4f}[/{pnl_color}]",
+                    f"[{pct_color}]{pnl_pct:+.2f}%[/{pct_color}]",
+                    f"+${data.get('funding_harvested_usdt', 0.0):.4f}",
+                    f"${data.get('avg_daily_pnl_usdt', 0.0):+.4f}",
+                    f"[bold]{data.get('annualized_yield_pct', 0.0):+.1f}%[/bold]"
+                )
+
+        # Row all-time
+        all_time = pnl_data.get("all_time", {})
+        if all_time:
+            table.add_row(
+                "[bold yellow]All Time[/bold yellow]",
+                "[dim]-[/dim]",
+                f"[bold green]${all_time.get('current_equity_usdt', 0.0):,.2f}[/bold green]",
+                "[dim]-[/dim]",
+                "[dim]-[/dim]",
+                f"[bold yellow]+${all_time.get('total_funding_harvested_usdt', 0.0):.4f}[/bold yellow]",
+                "[dim]-[/dim]",
+                "[dim]-[/dim]"
+            )
+
+        console.print(table)
+    except Exception as e:
+        log.debug(f"PnL timeframe display notice: {e}")
+
 def display_opportunities(opportunities, top_n: int = 10):
     """Menampilkan tabel hasil pemindaian peluang dengan analisis kuantitatif 30 hari dari Bitget & biaya taker."""
     table = Table(
@@ -302,18 +378,52 @@ async def start_health_check_server():
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
 
+        async def handle_pnl(request):
+            """
+            Endpoint PnL Multi-Timeframe Portfolio (1D, 1W, 1M, 1Y).
+            Menampilkan pertumbuhan portofolio nyata dari data REAL Bitget yang tersimpan.
+            TIDAK ADA DATA FIKTIF - semua bersumber dari saldo dan transaksi nyata.
+            """
+            timeframe_param = request.rel_url.query.get("tf", None)
+            if timeframe_param:
+                tf_map = {"1d": 1, "1w": 7, "1m": 30, "1y": 365, "7": 7, "30": 30, "365": 365}
+                days = tf_map.get(timeframe_param.lower(), 7)
+                pnl_data = db.get_pnl_for_timeframe(days)
+                equity_curve = db.get_pnl_equity_curve(days=days)
+                return web.json_response({
+                    "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+                    "pnl": pnl_data,
+                    "equity_curve_count": len(equity_curve),
+                    "equity_curve": equity_curve[-50:],  # Kirim 50 titik terakhir
+                    "note": "Data REAL dari Bitget API. Tidak ada data fiktif/mock.",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+            else:
+                # Semua timeframe
+                all_pnl = db.get_all_pnl_timeframes()
+                total_harvest = db.get_total_harvested_profit()
+                return web.json_response({
+                    "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+                    "pnl_by_timeframe": all_pnl,
+                    "total_funding_harvested_all_time": total_harvest,
+                    "usage": "?tf=1d|1w|1m|1y untuk timeframe spesifik",
+                    "note": "Data REAL dari Bitget API. Tidak ada data fiktif/mock.",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+
         app.router.add_get("/", handle_health)
         app.router.add_get("/health", handle_health)
         app.router.add_get("/history", handle_history)
         app.router.add_get("/agentic", handle_agentic)
         app.router.add_get("/balance", handle_balance)
+        app.router.add_get("/pnl", handle_pnl)
 
         port = int(os.getenv("PORT", "10000"))
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", port)
         await site.start()
-        log.info(f"🌐 [Health Server] Mini HTTP server aktif di port {port} (/health, /history, /agentic, /balance).")
+        log.info(f"🌐 [Health Server] Mini HTTP server aktif di port {port} (/health, /history, /agentic, /balance, /pnl).")
         return runner
     except Exception as e:
         log.warning(f"Tidak dapat memulai health check server: {e}")
@@ -363,10 +473,15 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
                 # 0. Rekonsiliasi exchange & ambil saldo akun dan tampilkan Portfolio Pool & Proteksi Earn
                 await position_manager.sync_active_positions_from_exchange(bitget_client)
                 bal = await bitget_client.fetch_balance()
-                total_bal = float(bal.get("total", {}).get("USDT", 0.0) or bal.get("USDT", {}).get("total", 0.0) or (settings.TOTAL_MAX_CAPITAL_USDT or 0.0))
+                total_bal = float(bal.get("total", {}).get("USDT", 0.0) or bal.get("USDT", {}).get("total", 0.0) or 0.0)
                 spot_free = float(bal.get("spot_free", 0.0))
                 swap_free = float(bal.get("swap_free", 0.0))
                 otc_free = float(bal.get("otc_free", 0.0))
+
+                # ⭐ KUNCI: Sinkronisasi modal pokok dari saldo REAL Bitget
+                # Ini menghapus semua angka fiktif/mock/hardcoded $20 selamanya
+                compounding_manager.sync_from_real_balance(total_bal)
+
                 display_compounding_pool(total_bal, spot_free, swap_free, otc_free)
 
                 # 0.1 Ambil dan tampilkan saldo gabungan multi-market (Spot tokens bernilai USDT, Futures, OTC, Earn)
@@ -378,6 +493,9 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
                     log.warning(f"[MainLoop] Notice perolehan saldo gabungan: {cbe}")
 
                 display_ai_brain_status()
+
+                # 0.2 Tampilkan analisis PnL multi-timeframe (1D, 1W, 1M, 1Y) dari data REAL
+                display_pnl_timeframes()
 
                 # Rekam snapshot ekuitas & saldo portofolio ke database
                 try:

@@ -17,9 +17,9 @@ class HarvestEvent(BaseModel):
     compounded_balance_after: float
 
 class CompoundingState(BaseModel):
-    initial_seed_capital: float = 20.0
+    initial_seed_capital: float = 0.0
     total_profit_compounded: float = 0.0
-    current_compounded_capital: float = 20.0
+    current_compounded_capital: float = 0.0
     harvest_events_count: int = 0
     last_updated: datetime = Field(default_factory=datetime.utcnow)
 
@@ -29,46 +29,83 @@ class CompoundingManager:
     
     1. Compounding: Seluruh profit funding fee yang dihasilkan otomatis dimasukkan kembali
        ke modal trading delta-neutral untuk memperbesar ukuran posisi berikutnya.
-    2. Isolasi Mutlak Akun Bitget Earn:
-       Bot hanya memiliki hak akses modal sebesar:
-           Maksimal Modal = Modal Pokok ($20.0) + Akumulasi Profit Delta-Neutral
-       Dana tabungan atau produk 'Earn' milik pengguna di Bitget tidak akan pernah
-       disentuh atau ditarik oleh bot dalam keadaan apa pun.
+    2. TIDAK ADA DATA FIKTIF: Seluruh modal bersumber dari saldo REAL Bitget (Spot + Futures).
+       Bot menggunakan 100% saldo cair yang tersedia, bukan nilai statis/mock.
+    3. Isolasi Mutlak Akun Bitget Earn:
+       Bot SAMA SEKALI TIDAK menyentuh dana di Bitget Earn/Savings/Staking.
     """
 
     def __init__(self, state_file: str = "data/compounding_state.json"):
         self.state_path = Path(state_file)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.initial_seed: float = settings.INITIAL_SEED_CAPITAL_USDT
+        # Seed kapital 0 → akan diisi dari saldo REAL Bitget saat pertama kali scan
+        self.initial_seed: float = 0.0
         self.total_profit_compounded: float = 0.0
-        self.current_capital: float = self.initial_seed
+        self.current_capital: float = 0.0
         self.events: List[HarvestEvent] = []
         self.load_state()
 
     def load_state(self):
         """Memuat riwayat compounding dari disk."""
         if not self.state_path.exists():
-            self.current_capital = self.initial_seed
+            # File belum ada → akan di-sync dari saldo REAL Bitget saat pertama berjalan
+            self.current_capital = 0.0
             self.total_profit_compounded = 0.0
             self.events = []
-            self.save_state()
             return
 
         try:
             with open(self.state_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                self.initial_seed = float(data.get("initial_seed_capital", settings.INITIAL_SEED_CAPITAL_USDT))
+                saved_seed = float(data.get("initial_seed_capital", 0.0))
+                self.initial_seed = saved_seed
                 self.total_profit_compounded = float(data.get("total_profit_compounded", 0.0))
                 self.current_capital = round(self.initial_seed + self.total_profit_compounded, 4)
                 self.events = [HarvestEvent.model_validate(e) for e in data.get("events", [])]
-            log.info(
-                f"[CompoundingManager] Modal Ter-Compound: ${self.current_capital:.4f} USDT "
-                f"(Modal Pokok: ${self.initial_seed:.2f} + Profit Diputar: ${self.total_profit_compounded:.4f})"
-            )
+            if self.initial_seed > 0:
+                log.info(
+                    f"[CompoundingManager] Modal Ter-Compound: ${self.current_capital:.4f} USDT "
+                    f"(Modal Pokok Real: ${self.initial_seed:.2f} + Profit Diputar: ${self.total_profit_compounded:.4f})"
+                )
+            else:
+                log.info("[CompoundingManager] Menunggu sinkronisasi saldo real dari Bitget...")
         except Exception as e:
             log.error(f"Gagal memuat compounding state: {e}")
-            self.current_capital = self.initial_seed
+            self.current_capital = 0.0
             self.total_profit_compounded = 0.0
+
+    def sync_from_real_balance(self, real_liquid_usdt: float):
+        """
+        Sinkronisasi modal pokok dari saldo REAL Bitget.
+        Dipanggil setiap siklus utama agar modal selalu mencerminkan saldo aktual.
+        TIDAK PERNAH menggunakan angka fiktif/statis/mock.
+        """
+        if real_liquid_usdt <= 0:
+            return
+        if self.initial_seed <= 0:
+            # Pertama kali: set seed dari saldo real
+            self.initial_seed = round(real_liquid_usdt, 4)
+            self.current_capital = round(self.initial_seed + self.total_profit_compounded, 4)
+            self.save_state()
+            log.info(
+                f"[CompoundingManager] 🔗 Modal pokok diinisialisasi dari saldo REAL Bitget: "
+                f"${self.initial_seed:.4f} USDT (Total Modal Aktif: ${self.current_capital:.4f} USDT)"
+            )
+        else:
+            # Siklus berikutnya: perbarui modal aktif jika saldo real > modal ter-compound
+            # (misalnya user deposit lebih banyak atau ada peningkatan dari spot/futures)
+            real_total = real_liquid_usdt + self.total_profit_compounded
+            if real_liquid_usdt > self.initial_seed * 1.01:  # Ada kenaikan > 1%
+                old_seed = self.initial_seed
+                self.initial_seed = round(real_liquid_usdt, 4)
+                self.current_capital = round(self.initial_seed + self.total_profit_compounded, 4)
+                self.save_state()
+                log.info(
+                    f"[CompoundingManager] 📈 Modal pokok diperbarui dari saldo real: "
+                    f"${old_seed:.4f} → ${self.initial_seed:.4f} USDT "
+                    f"(Modal Aktif Total: ${self.current_capital:.4f} USDT)"
+                )
+
 
     def save_state(self):
         """Menyimpan status compounding ke disk."""
@@ -122,9 +159,9 @@ class CompoundingManager:
 
     def get_position_capital(self, available_liquid_usdt: Optional[float] = None) -> float:
         """
-        Mendapatkan ukuran modal dinamis untuk posisi berikutnya:
-        - Jika USE_ALL_AVAILABLE_BALANCE aktif, gunakan 100% modal cair yang ada di dompet Spot & Futures (dikurangi buffer 2%).
-        - Menjamin dana tabungan di Bitget Earn sama sekali tidak tersentuh.
+        Mendapatkan ukuran modal dinamis untuk posisi berikutnya.
+        SELALU menggunakan saldo REAL dari Bitget (Spot + Futures).
+        TIDAK PERNAH menggunakan angka statis/mock/fiktif.
         """
         if settings.USE_ALL_AVAILABLE_BALANCE and available_liquid_usdt is not None and available_liquid_usdt > 0:
             usable = available_liquid_usdt * (1.0 - settings.LIQUID_SAFETY_BUFFER_PERCENT)
@@ -134,8 +171,13 @@ class CompoundingManager:
             floor_val = math.floor(per_pos * 100.0) / 100.0
             return max(5.0, floor_val)
 
-        # Fallback ke modal ter-compound lokal jika balance live tidak dilewatkan
-        return round(self.current_capital, 2)
+        # Jika current_capital belum di-sync dari Bitget, gunakan available_liquid_usdt sebagai fallback
+        if self.current_capital > 0:
+            return round(self.current_capital, 2)
+        if available_liquid_usdt and available_liquid_usdt > 0:
+            return round(available_liquid_usdt * (1.0 - settings.LIQUID_SAFETY_BUFFER_PERCENT), 2)
+        return 5.0  # Minimal absolut
+
 
     def validate_capital_usage(self, requested_amount: float, available_liquid_usdt: float) -> bool:
         """
