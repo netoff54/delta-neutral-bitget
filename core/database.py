@@ -26,9 +26,14 @@ class UnifiedDatabase:
     """
 
     def __init__(self, db_url: Optional[str] = None, sqlite_path: str = "data/delta_neutral_history.db"):
-        self.db_url = db_url or getattr(settings, "DATABASE_URL", None)
+        if sqlite_path != "data/delta_neutral_history.db" and db_url is None:
+            # Explicit isolated test path requested
+            self.db_url = None
+        else:
+            self.db_url = db_url or getattr(settings, "DATABASE_URL", None)
         self.is_postgres = False
         self.sqlite_path = Path(sqlite_path)
+        self._pg_pool = None
 
         if self.db_url and (self.db_url.startswith("postgres://") or self.db_url.startswith("postgresql://")):
             # Standardisasi protocol URI untuk psycopg2
@@ -49,15 +54,28 @@ class UnifiedDatabase:
             try:
                 import psycopg2
                 import psycopg2.extras
-                conn = psycopg2.connect(self.db_url, cursor_factory=psycopg2.extras.RealDictCursor)
+                from psycopg2.pool import ThreadedConnectionPool
+
+                if self._pg_pool is None:
+                    self._pg_pool = ThreadedConnectionPool(
+                        minconn=1,
+                        maxconn=5,
+                        dsn=self.db_url,
+                        cursor_factory=psycopg2.extras.RealDictCursor
+                    )
+
+                conn = self._pg_pool.getconn()
                 try:
+                    if conn.closed != 0:
+                        raise psycopg2.OperationalError("Connection is closed")
                     yield conn
                     conn.commit()
                 except Exception:
                     conn.rollback()
                     raise
                 finally:
-                    conn.close()
+                    if self._pg_pool and not conn.closed:
+                        self._pg_pool.putconn(conn)
             except Exception as e:
                 log.error(f"[Database] Koneksi PostgreSQL gagal: {e}. Fallback ke SQLite lokal.")
                 self.is_postgres = False

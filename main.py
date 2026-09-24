@@ -349,133 +349,138 @@ def display_active_positions():
 
 from core.database import db
 
-_global_health_runner = None
+import threading
+
+_health_server_started = False
+
+def _run_dedicated_health_server(port: int):
+    """
+    Menjalankan HTTP server di thread terisolasi khusus agar port 10000
+    SELALU merespons < 1ms tanpa pernah terhambat tugas berat trading atau sinkronisasi database.
+    """
+    import asyncio
+    from aiohttp import web
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    app = web.Application()
+
+    async def handle_health(request):
+        active_positions = position_manager.get_active_positions()
+        pos_summary = [
+            {
+                "symbol": p.base_asset,
+                "spot_qty": p.spot_leg.amount,
+                "perp_contracts": p.perp_leg.amount,
+                "unrealized_pnl": p.unrealized_pnl_usdt,
+                "funding_received": p.cumulative_funding_received,
+                "net_delta": p.net_delta,
+                "interval_hours": p.funding_interval_hours,
+            }
+            for p in active_positions
+        ]
+        return web.json_response({
+            "status": "healthy",
+            "service": "Delta-Neutral Bitget Autonomous Agent",
+            "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+            "active_positions": len(active_positions),
+            "positions": pos_summary,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+
+    async def handle_history(request):
+        positions = db.get_positions_history(limit=20)
+        orders = db.get_orders_history(limit=20)
+        harvests = db.get_harvest_history(limit=20)
+        total_profit = db.get_total_harvested_profit()
+        return web.json_response({
+            "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+            "total_harvested_profit_usdt": total_profit,
+            "positions_count": len(positions),
+            "recent_positions": positions,
+            "recent_orders": orders,
+            "recent_harvests": harvests,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+
+    async def handle_agentic(request):
+        mem = db.get_agentic_memory(limit=20)
+        reps = db.get_all_pair_reputations()
+        return web.json_response({
+            "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+            "total_memories_stored": len(mem),
+            "pair_reputations": reps,
+            "recent_agentic_memories": mem,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+
+    async def handle_balance(request):
+        latest = db.get_latest_combined_balance()
+        history = db.get_combined_balance_history(limit=20)
+        growth = db.get_equity_growth_stats(days=7)
+        return web.json_response({
+            "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+            "latest_combined_balance": latest,
+            "equity_growth_stats_7d": growth,
+            "history_count": len(history),
+            "recent_history": history,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+
+    async def handle_pnl(request):
+        timeframe_param = request.rel_url.query.get("tf", None)
+        if timeframe_param:
+            tf_map = {"1d": 1, "1w": 7, "1m": 30, "1y": 365, "7": 7, "30": 30, "365": 365}
+            days = tf_map.get(timeframe_param.lower(), 7)
+            pnl_data = db.get_pnl_for_timeframe(days)
+            equity_curve = db.get_pnl_equity_curve(days=days)
+            return web.json_response({
+                "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+                "pnl": pnl_data,
+                "equity_curve_count": len(equity_curve),
+                "equity_curve": equity_curve[-50:],
+                "note": "Data REAL dari Bitget API. Tidak ada data fiktif/mock.",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+        else:
+            all_pnl = db.get_all_pnl_timeframes()
+            total_harvest = db.get_total_harvested_profit()
+            return web.json_response({
+                "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
+                "pnl_by_timeframe": all_pnl,
+                "total_funding_harvested_all_time": total_harvest,
+                "usage": "?tf=1d|1w|1m|1y untuk timeframe spesifik",
+                "note": "Data REAL dari Bitget API. Tidak ada data fiktif/mock.",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
+
+    app.router.add_get("/", handle_health)
+    app.router.add_get("/health", handle_health)
+    app.router.add_get("/history", handle_history)
+    app.router.add_get("/agentic", handle_agentic)
+    app.router.add_get("/balance", handle_balance)
+    app.router.add_get("/pnl", handle_pnl)
+
+    try:
+        runner = web.AppRunner(app)
+        loop.run_until_complete(runner.setup())
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        loop.run_until_complete(site.start())
+        log.info(f"🌐 [Health Server] Dedicated isolated thread aktif di port {port} (Zero-latency instant response).")
+        loop.run_forever()
+    except Exception as e:
+        log.error(f"[Health Server] Thread error: {e}")
 
 async def start_health_check_server():
-    """Server HTTP mini untuk Render/Cloud Health Check, Riwayat Database, dan Memori Agentic."""
-    global _global_health_runner
-    if _global_health_runner is not None:
-        return _global_health_runner
-    try:
-        from aiohttp import web
-        app = web.Application()
-
-        async def handle_health(request):
-            active_positions = position_manager.get_active_positions()
-            pos_summary = [
-                {
-                    "symbol": p.base_asset,
-                    "spot_qty": p.spot_leg.amount,
-                    "perp_contracts": p.perp_leg.amount,
-                    "unrealized_pnl": p.unrealized_pnl_usdt,
-                    "funding_received": p.cumulative_funding_received,
-                    "net_delta": p.net_delta,
-                    "interval_hours": p.funding_interval_hours,
-                }
-                for p in active_positions
-            ]
-            return web.json_response({
-                "status": "healthy",
-                "service": "Delta-Neutral Bitget Autonomous Agent",
-                "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
-                "active_positions": len(active_positions),
-                "positions": pos_summary,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            })
-
-        async def handle_history(request):
-            """Endpoint untuk melihat seluruh riwayat posisi, order, dan panen funding langsung dari database tanpa memanggil Bitget API."""
-            positions = db.get_positions_history(limit=20)
-            orders = db.get_orders_history(limit=20)
-            harvests = db.get_harvest_history(limit=20)
-            total_profit = db.get_total_harvested_profit()
-            return web.json_response({
-                "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
-                "total_harvested_profit_usdt": total_profit,
-                "positions_count": len(positions),
-                "recent_positions": positions,
-                "recent_orders": orders,
-                "recent_harvests": harvests,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            })
-
-        async def handle_agentic(request):
-            """Endpoint untuk melihat akumulasi memori, aturan taktis, dan reputasi koin Gemini AI."""
-            mem = db.get_agentic_memory(limit=20)
-            reps = db.get_all_pair_reputations()
-            return web.json_response({
-                "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
-                "total_memories_stored": len(mem),
-                "pair_reputations": reps,
-                "recent_agentic_memories": mem,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            })
-
-        async def handle_balance(request):
-            """Endpoint untuk melihat saldo gabungan multi-market (Spot, Futures, OTC, Earn) dan riwayat pertumbuhannya dari database."""
-            latest = db.get_latest_combined_balance()
-            history = db.get_combined_balance_history(limit=20)
-            growth = db.get_equity_growth_stats(days=7)
-            return web.json_response({
-                "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
-                "latest_combined_balance": latest,
-                "equity_growth_stats_7d": growth,
-                "history_count": len(history),
-                "recent_history": history,
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            })
-
-        async def handle_pnl(request):
-            """
-            Endpoint PnL Multi-Timeframe Portfolio (1D, 1W, 1M, 1Y).
-            Menampilkan pertumbuhan portofolio nyata dari data REAL Bitget yang tersimpan.
-            TIDAK ADA DATA FIKTIF - semua bersumber dari saldo dan transaksi nyata.
-            """
-            timeframe_param = request.rel_url.query.get("tf", None)
-            if timeframe_param:
-                tf_map = {"1d": 1, "1w": 7, "1m": 30, "1y": 365, "7": 7, "30": 30, "365": 365}
-                days = tf_map.get(timeframe_param.lower(), 7)
-                pnl_data = db.get_pnl_for_timeframe(days)
-                equity_curve = db.get_pnl_equity_curve(days=days)
-                return web.json_response({
-                    "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
-                    "pnl": pnl_data,
-                    "equity_curve_count": len(equity_curve),
-                    "equity_curve": equity_curve[-50:],  # Kirim 50 titik terakhir
-                    "note": "Data REAL dari Bitget API. Tidak ada data fiktif/mock.",
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                })
-            else:
-                # Semua timeframe
-                all_pnl = db.get_all_pnl_timeframes()
-                total_harvest = db.get_total_harvested_profit()
-                return web.json_response({
-                    "database_engine": "PostgreSQL" if db.is_postgres else "SQLite",
-                    "pnl_by_timeframe": all_pnl,
-                    "total_funding_harvested_all_time": total_harvest,
-                    "usage": "?tf=1d|1w|1m|1y untuk timeframe spesifik",
-                    "note": "Data REAL dari Bitget API. Tidak ada data fiktif/mock.",
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                })
-
-        app.router.add_get("/", handle_health)
-        app.router.add_get("/health", handle_health)
-        app.router.add_get("/history", handle_history)
-        app.router.add_get("/agentic", handle_agentic)
-        app.router.add_get("/balance", handle_balance)
-        app.router.add_get("/pnl", handle_pnl)
-
-        port = int(os.getenv("PORT", "10000"))
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", port)
-        await site.start()
-        log.info(f"🌐 [Health Server] Mini HTTP server aktif di port {port} (/health, /history, /agentic, /balance, /pnl).")
-        _global_health_runner = runner
-        return runner
-    except Exception as e:
-        log.warning(f"Tidak dapat memulai health check server: {e}")
-        return None
+    """Memulai server HTTP mini di thread independen agar responsif 100% tanpa delay."""
+    global _health_server_started
+    if _health_server_started:
+        return
+    port = int(os.getenv("PORT", "10000"))
+    t = threading.Thread(target=_run_dedicated_health_server, args=(port,), daemon=True)
+    t.start()
+    _health_server_started = True
+    await asyncio.sleep(0.5)  # Beri waktu thread mengikat port
 
 async def self_ping_loop():
     """Ping endpoint /health milik sendiri setiap 4 menit agar Render Free Tier tidak spin-down.

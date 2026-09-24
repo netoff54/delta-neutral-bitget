@@ -207,7 +207,8 @@ class OpportunityFinder:
         since_30d = now_ms - (30 * 86400 * 1000)
 
         for opp in top_candidates:
-            # 1. Ambil riwayat dari SQLite store 30 hari
+            await asyncio.sleep(0.01)  # Yield kendali ke event loop agar responsif
+            # 1. Ambil riwayat dari SQLite/PostgreSQL store 30 hari
             stored_30d = historical_store.get_funding_history(opp.perp_symbol, days=30)
             
             # Hitung target siklus 30 hari sesuai interval dinamis (1h = 720 siklus, 4h = 180 siklus, 8h = 90 siklus)
