@@ -163,20 +163,21 @@ class CompoundingManager:
         SELALU menggunakan saldo REAL dari Bitget (Spot + Futures).
         TIDAK PERNAH menggunakan angka statis/mock/fiktif.
         """
-        if settings.USE_ALL_AVAILABLE_BALANCE and available_liquid_usdt is not None and available_liquid_usdt > 0:
+        if settings.USE_ALL_AVAILABLE_BALANCE and available_liquid_usdt is not None:
+            if available_liquid_usdt <= 0:
+                return 0.0
             usable = available_liquid_usdt * (1.0 - settings.LIQUID_SAFETY_BUFFER_PERCENT)
             per_pos = usable / max(1, settings.MAX_CONCURRENT_POSITIONS)
             if settings.MAX_CAPITAL_PER_POSITION_USDT:
                 per_pos = min(per_pos, settings.MAX_CAPITAL_PER_POSITION_USDT)
-            floor_val = math.floor(per_pos * 100.0) / 100.0
-            return max(5.0, floor_val)
+            return round(math.floor(per_pos * 100.0) / 100.0, 2)
 
         # Jika current_capital belum di-sync dari Bitget, gunakan available_liquid_usdt sebagai fallback
         if self.current_capital > 0:
             return round(self.current_capital, 2)
         if available_liquid_usdt and available_liquid_usdt > 0:
             return round(available_liquid_usdt * (1.0 - settings.LIQUID_SAFETY_BUFFER_PERCENT), 2)
-        return 5.0  # Minimal absolut
+        return 0.0
 
 
     def validate_capital_usage(self, requested_amount: float, available_liquid_usdt: float) -> bool:

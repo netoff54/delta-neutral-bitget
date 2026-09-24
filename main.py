@@ -71,18 +71,43 @@ def display_combined_balance(combined: Dict[str, Any]):
         box=box.ROUNDED
     ))
 
-def display_compounding_pool(total_liquid_usdt: float, spot_free: float = 0.0, swap_free: float = 0.0, otc_free: float = 0.0):
+def display_compounding_pool(
+    total_liquid_usdt: float,
+    spot_free: float = 0.0,
+    swap_free: float = 0.0,
+    otc_free: float = 0.0,
+    active_capital_usdt: float = 0.0,
+    active_positions_count: int = 0
+):
     """Menampilkan status saldo trading cair, saldo OTC, compounding profit, dan proteksi saldo Bitget Earn."""
     summary = compounding_manager.get_summary()
-    usable_capital = compounding_manager.get_position_capital(total_liquid_usdt)
+    buffer_pct = settings.LIQUID_SAFETY_BUFFER_PERCENT
+    buffer_usdt = round(total_liquid_usdt * buffer_pct, 4)
+    usable_capital = max(0.0, round(total_liquid_usdt - buffer_usdt, 2))
 
     if settings.USE_ALL_AVAILABLE_BALANCE:
         otc_info = f" | OTC (Pendanaan): ${otc_free:,.2f}" if settings.INCLUDE_OTC_BALANCE else ""
+        if active_positions_count > 0:
+            status_modal = (
+                f"[bold cyan]💼 MODAL AKTIF BEKERJA:[/bold cyan] [bold green]${active_capital_usdt:,.2f} USDT[/bold green] "
+                f"[dim]({active_positions_count}/{settings.MAX_CONCURRENT_POSITIONS} slot posisi aktif berjalan)[/dim]\n"
+                f"[bold yellow]💵 SISA KAS BEBAS DI DOMPET:[/bold yellow] [white]${total_liquid_usdt:,.2f} USDT[/white] "
+                f"[dim](Spot: ${spot_free:,.2f} | Futures: ${swap_free:,.2f}{otc_info})[/dim]\n"
+                f"  • [dim]Cadangan Pengaman Fee ({buffer_pct*100:.0f}%):[/dim] [dim yellow]${buffer_usdt:,.4f} USDT[/dim yellow]\n"
+                f"  • [dim]Kas Bebas Setelah Cadangan ({100-buffer_pct*100:.0f}%):[/dim] [dim white]${usable_capital:,.2f} USDT[/dim white] "
+                f"[italic dim](< Batas Min Order Exchange $5.00 -> Tidak membuka posisi baru tanpa penambahan dana)[/italic dim]"
+            )
+        else:
+            status_modal = (
+                f"[bold cyan]💼 TOTAL SALDO CAIR:[/bold cyan] [bold green]${total_liquid_usdt:,.2f} USDT[/bold green] "
+                f"[dim](Spot: ${spot_free:,.2f} | Futures: ${swap_free:,.2f}{otc_info})[/dim]\n"
+                f"  • [dim]Cadangan Pengaman Fee ({buffer_pct*100:.0f}%):[/dim] [dim yellow]${buffer_usdt:,.4f} USDT[/dim yellow]\n"
+                f"[bold green]🚀 MODAL SIAP DITRADINGKAN ({100-buffer_pct*100:.0f}%):[/bold green] [bold white]${usable_capital:,.2f} USDT[/bold white] "
+                f"[dim](Per Posisi: ${usable_capital / max(1, settings.MAX_CONCURRENT_POSITIONS):,.2f} USDT | Max Lev: {settings.LEVERAGE}x)[/dim]"
+            )
+
         console.print(Panel(
-            f"[bold cyan]💼 TOTAL SALDO CAIR (SPOT + FUTURES + OTC):[/bold cyan] [bold green]${total_liquid_usdt:,.2f} USDT[/bold green] "
-            f"[dim](Spot: ${spot_free:,.2f} | Futures: ${swap_free:,.2f}{otc_info})[/dim]\n"
-            f"[bold green]🚀 MODAL SIAP DITRADINGKAN (BUFFER 2%):[/bold green] [bold white]${usable_capital:,.2f} USDT[/bold white] "
-            f"[dim](Per Posisi: ${usable_capital / max(1, settings.MAX_CONCURRENT_POSITIONS):,.2f} USDT | Max Lev: {settings.LEVERAGE}x)[/dim]\n"
+            f"{status_modal}\n"
             f"[bold magenta]📈 PROFIT FUNDING FEE DIPUTAR (COMPOUNDED):[/bold magenta] [bold yellow]+${summary.total_profit_compounded:.4f} USDT[/bold yellow] "
             f"({summary.harvest_events_count}x siklus panen otomatis membesar modal)\n"
             f"[dim]----------------------------------------------------------------------[/dim]\n"
@@ -489,25 +514,48 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
 
                 # 0. Rekonsiliasi exchange & ambil saldo akun dan tampilkan Portfolio Pool & Proteksi Earn
                 await position_manager.sync_active_positions_from_exchange(bitget_client)
+                active_pos_list = position_manager.get_active_positions()
+                active_pos_count = len(active_pos_list)
+
+                # Hitung nilai modal aktual yang sedang aktif di posisi (Spot + Futures Margin)
+                active_cap = 0.0
+                for p in active_pos_list:
+                    spot_val = getattr(p.spot_leg, "nominal_usdt", 0.0) or (p.spot_leg.entry_price * p.spot_leg.amount)
+                    perp_margin = (getattr(p.perp_leg, "nominal_usdt", 0.0) or (p.perp_leg.entry_price * p.perp_leg.amount)) / max(1, getattr(p, "leverage", 1))
+                    active_cap += (spot_val + perp_margin)
+
                 bal = await bitget_client.fetch_balance()
                 total_bal = float(bal.get("total", {}).get("USDT", 0.0) or bal.get("USDT", {}).get("total", 0.0) or 0.0)
                 spot_free = float(bal.get("spot_free", 0.0))
                 swap_free = float(bal.get("swap_free", 0.0))
                 otc_free = float(bal.get("otc_free", 0.0))
 
-                # ⭐ KUNCI: Sinkronisasi modal pokok dari saldo REAL Bitget
-                # Ini menghapus semua angka fiktif/mock/hardcoded $20 selamanya
-                compounding_manager.sync_from_real_balance(total_bal)
-
-                display_compounding_pool(total_bal, spot_free, swap_free, otc_free)
-
-                # 0.1 Ambil dan tampilkan saldo gabungan multi-market (Spot tokens bernilai USDT, Futures, OTC, Earn)
+                # Ambil saldo gabungan multi-market (Spot tokens bernilai USDT, Futures, OTC, Earn)
                 try:
                     combined_bal = await bitget_client.fetch_all_combined_balances()
                     display_combined_balance(combined_bal)
-                    db.record_combined_balance(combined_bal, active_positions_count=len(position_manager.get_active_positions()))
+                    db.record_combined_balance(combined_bal, active_positions_count=active_pos_count)
                 except Exception as cbe:
                     log.warning(f"[MainLoop] Notice perolehan saldo gabungan: {cbe}")
+                    combined_bal = {}
+
+                # Hitung total ekuitas trading bersih portofolio (Spot + Futures, 100% tanpa Bitget Earn)
+                spot_eq = float(combined_bal.get("spot", {}).get("equity_usdt", 0.0))
+                futures_eq = float(combined_bal.get("futures", {}).get("equity_usdt", 0.0))
+                otc_eq = float(combined_bal.get("otc", {}).get("equity_usdt", 0.0) if settings.INCLUDE_OTC_BALANCE else 0.0)
+                total_trading_equity = spot_eq + futures_eq + otc_eq
+
+                # ⭐ KUNCI: Sinkronisasi modal pokok dari total ekuitas trading REAL Bitget
+                compounding_manager.sync_from_real_balance(total_trading_equity if total_trading_equity > 0 else total_bal)
+
+                display_compounding_pool(
+                    total_liquid_usdt=total_bal,
+                    spot_free=spot_free,
+                    swap_free=swap_free,
+                    otc_free=otc_free,
+                    active_capital_usdt=active_cap,
+                    active_positions_count=active_pos_count
+                )
 
                 display_ai_brain_status()
 
@@ -522,15 +570,12 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
                         spot_free_usdt=spot_free,
                         swap_free_usdt=swap_free,
                         otc_free_usdt=otc_free,
-                        active_positions_count=len(position_manager.get_active_positions()),
+                        active_positions_count=active_pos_count,
                         compounded_capital_usdt=summary.current_compounded_capital,
                         total_profit_harvested_usdt=summary.total_profit_compounded
                     )
                 except Exception as dbe:
                     log.debug(f"[MainLoop] Portfolio snapshot record notice: {dbe}")
-
-                # Hitung modal trading dinamis yang dialokasikan (seluruh saldo cair atau manual override)
-                current_compounded_cap = manual_capital if manual_capital else compounding_manager.get_position_capital(total_bal)
 
                 # 1. Health & Risk Check pada posisi aktif
                 log.info("Menjalankan pemeriksaan risiko (Margin Guard & Funding Guard)...")
@@ -543,14 +588,22 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
                 # Tampilkan posisi aktif
                 display_active_positions()
 
-                # 3. Pindai dan evaluasi seluruh pasar secara prediktif dengan modal ter-compound
-                opportunities = await opportunity_finder.scan(target_nominal_usdt=current_compounded_cap)
+                # 3. Pindai dan evaluasi seluruh pasar secara prediktif
+                # Jika ada posisi aktif, evaluasi peluang & rotasi dinilai berdasarkan modal posisi aktif (~$63) yang akan di-unwind
+                # Jika tidak ada posisi aktif, gunakan modal cair yang siap ditradingkan
+                if manual_capital:
+                    scan_capital = manual_capital
+                elif active_pos_count > 0 and (active_cap >= 10.0 or total_trading_equity >= 10.0):
+                    scan_capital = round(max(active_cap, total_trading_equity), 2)
+                else:
+                    scan_capital = compounding_manager.get_position_capital(total_bal)
+
+                opportunities = await opportunity_finder.scan(target_nominal_usdt=scan_capital)
                 display_opportunities(opportunities, top_n=10)
 
                 # 3.5. Evaluasi Real-Time Ground-Truth oleh Gemini AGI (Alokasi 50% Kuota = 720 calls/hari)
                 if settings.ENABLE_AI_BRAIN and getattr(settings, "AI_REALTIME_EVALUATION", True):
                     from core.gemini_brain import gemini_brain
-                    active_pos_list = position_manager.get_active_positions()
                     cd_mins = None
                     if active_pos_list:
                         try:
@@ -575,35 +628,39 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
                 # 4. Rotasi Peluang Otomatis (Mencari taker lain dengan potensi yield lebih tinggi)
                 await auto_rebalancer.evaluate_and_rotate(
                     opportunities=opportunities,
-                    capital_per_position=current_compounded_cap
+                    capital_per_position=scan_capital
                 )
 
-                # 5. Keputusan Eksekusi Pembukaan Posisi Baru
+                # 5. Keputusan Eksekusi Pembukaan Posisi Baru (Hanya jika slot tersedia dan ada kas cair yang cukup)
                 eligible_opportunities = [o for o in opportunities if o.is_eligible]
-                active_count = len(position_manager.get_active_positions())
-
-                # Batas posisi aktif: default MAX_CONCURRENT_POSITIONS (1 posisi agar modal fokus 100%)
                 max_allowed_positions = settings.MAX_CONCURRENT_POSITIONS
+                liquid_entry_capital = manual_capital if manual_capital else compounding_manager.get_position_capital(total_bal)
 
                 if auto_trade and eligible_opportunities:
-                    if active_count < max_allowed_positions:
-                        from core.gemini_brain import gemini_brain
-                        best_opp = await gemini_brain.select_optimal_taker_agi(eligible_opportunities, current_compounded_cap) or eligible_opportunities[0]
-                        if not position_manager.get_position_by_base(best_opp.base_asset):
+                    if active_pos_count < max_allowed_positions:
+                        if liquid_entry_capital < 10.0:
                             console.print(
-                                f"\n[bold green]🎯 Peluang Terbaik Terpilih AGI: {best_opp.base_asset} "
-                                f"(Skor: {best_opp.composite_performance_score:.1f}, Prediksi Next: {best_opp.predicted_next_funding_rate*100:.4f}%, "
-                                f"Net APY: {best_opp.net_apy_percent:.1f}%).\n"
-                                f"Mengeksekusi posisi Delta-Neutral dengan Alokasi Modal Cair: ${current_compounded_cap:.2f} USDT "
-                                f"(Max {settings.LEVERAGE}x Leverage)...[/bold green]"
+                                f"\n[yellow]⚠️ Slot posisi tersedia ({active_pos_count}/{max_allowed_positions}), namun sisa kas bebas "
+                                f"(${liquid_entry_capital:.2f} USDT) di bawah batas minimal order exchange ($10.00 USDT).[/yellow]"
                             )
-                            await order_executor.open_delta_neutral_position(
-                                opportunity=best_opp,
-                                allocated_capital_usdt=current_compounded_cap
-                            )
+                        else:
+                            from core.gemini_brain import gemini_brain
+                            best_opp = await gemini_brain.select_optimal_taker_agi(eligible_opportunities, liquid_entry_capital) or eligible_opportunities[0]
+                            if not position_manager.get_position_by_base(best_opp.base_asset):
+                                console.print(
+                                    f"\n[bold green]🎯 Peluang Terbaik Terpilih AGI: {best_opp.base_asset} "
+                                    f"(Skor: {best_opp.composite_performance_score:.1f}, Prediksi Next: {best_opp.predicted_next_funding_rate*100:.4f}%, "
+                                    f"Net APY: {best_opp.net_apy_percent:.1f}%).\n"
+                                    f"Mengeksekusi posisi Delta-Neutral dengan Alokasi Modal Cair: ${liquid_entry_capital:.2f} USDT "
+                                    f"(Max {settings.LEVERAGE}x Leverage)...[/bold green]"
+                                )
+                                await order_executor.open_delta_neutral_position(
+                                    opportunity=best_opp,
+                                    allocated_capital_usdt=liquid_entry_capital
+                                )
                     else:
                         console.print(
-                            f"\n[yellow]Kapasitas modal trading terpakai penuh ({active_count}/{max_allowed_positions} posisi aktif). "
+                            f"\n[yellow]Kapasitas modal trading terpakai penuh ({active_pos_count}/{max_allowed_positions} posisi aktif). "
                             f"Modal sedang bekerja memanen funding fee.[/yellow]"
                         )
 

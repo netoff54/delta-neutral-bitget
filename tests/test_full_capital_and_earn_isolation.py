@@ -69,7 +69,7 @@ async def test_otc_balance_and_transfer():
     print("\n=== TEST 5: Automatic OTC / P2P Balance Detection & Transfer ===")
     client = BitgetClient()
     
-    with patch.object(settings, "DRY_RUN", True):
+    with patch.object(settings, "DRY_RUN", True), patch.object(settings, "INCLUDE_OTC_BALANCE", True), patch.object(settings, "SIMULATED_OTC_BALANCE_USDT", 50.0), patch.object(settings, "SIMULATED_BALANCE_USDT", 100.0):
         # 1. Pastikan saldo OTC terdeteksi
         otc_bal = await client.fetch_otc_balance()
         assert otc_bal == 50.0, f"Expected 50.0, got {otc_bal}"
