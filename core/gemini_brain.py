@@ -137,6 +137,25 @@ class GeminiBrain:
                 lesson = m.get("lesson_learned", m.get("insight", ""))[:120]
                 context_lines.append(f"{idx}. [{coin}] Rate: {rate:+.4f}%, Profit: +${profit:.4f}, Net PnL: ${pnl:+.4f} | Catatan: {lesson}")
 
+        # Tambahkan Analisis PnL Multi-Timeframe (1D, 1W, 1M, 1Y) Langsung dari Database
+        try:
+            from core.database import db
+            all_pnl = db.get_all_pnl_timeframes()
+            pnl_1d = all_pnl.get("1D", {})
+            pnl_1w = all_pnl.get("1W", {})
+            pnl_1m = all_pnl.get("1M", {})
+            all_time = all_pnl.get("all_time", {})
+
+            context_lines.append(
+                f"\nPerforma PnL Portofolio Multi-Timeframe (Data Real Bitget):\n"
+                f"- 1D: PnL ${pnl_1d.get('pnl_usdt', 0.0):+.4f} ({pnl_1d.get('pnl_pct', 0.0):+.2f}%) | Harvest: +${pnl_1d.get('funding_harvested_usdt', 0.0):.4f}\n"
+                f"- 1W: PnL ${pnl_1w.get('pnl_usdt', 0.0):+.4f} ({pnl_1w.get('pnl_pct', 0.0):+.2f}%) | Harvest: +${pnl_1w.get('funding_harvested_usdt', 0.0):.4f}\n"
+                f"- 1M: PnL ${pnl_1m.get('pnl_usdt', 0.0):+.4f} ({pnl_1m.get('pnl_pct', 0.0):+.2f}%)\n"
+                f"- All-Time Total Funding Dipanen: +${all_time.get('total_funding_harvested_usdt', 0.0):.4f} USDT"
+            )
+        except Exception:
+            pass
+
         # Tambahkan Telemetri Saldo Gabungan Multi-Market dari Database
         try:
             from core.database import db
@@ -147,13 +166,21 @@ class GeminiBrain:
                     f"\nStatus Saldo Gabungan Portofolio (Seluruh Pasar Bitget):\n"
                     f"- Total Kekayaan Bersih (Net Worth): ${latest_bal.get('total_combined_equity_usdt', 0.0):.2f} USDT\n"
                     f"  * Dompet Spot: ${latest_bal.get('spot_equity_usdt', 0.0):.2f} USDT\n"
-                    f"  * Dompet Futures: ${latest_bal.get('futures_equity_usdt', 0.0):.2f} USDT (Margin Digunakan: ${latest_bal.get('futures_margin_used_usdt', 0.0):.2f})\n"
+                    f"  * Dompet Futures: ${latest_bal.get('futures_equity_usdt', 0.0):.2f} USDT (Margin: ${latest_bal.get('futures_margin_used_usdt', 0.0):.2f})\n"
                     f"  * Dompet OTC: ${latest_bal.get('otc_funding_equity_usdt', 0.0):.2f} USDT | Earn: 100% Aman Terlindungi\n"
                     f"- Stabilitas Delta-Neutral 7D: {growth_stats.get('stability_rating', 'STABLE')} "
                     f"(Perubahan Net Worth: {growth_stats.get('growth_pct', 0.0):+.2f}% / ${growth_stats.get('net_change_usdt', 0.0):+.4f} USDT)"
                 )
         except Exception:
             pass
+
+        # Prinsip Eksekusi Kuantitatif Profesional
+        context_lines.append(
+            f"\nPrinsip Utama Delta-Neutral Profesional:\n"
+            f"- Eksekusi: Full Maker (Limit Post-Only) untuk fee termurah & basis spread selalu positif (perp >= spot).\n"
+            f"- Status BEP: Wajib menutup lunas 100% dari 4 biaya (Spot Beli + Jual, Futures Buka + Tutup).\n"
+            f"- Rotasi: Wajib surplus minimal 5% nilai BEP (< 1 bulan) dan WAJIB minimal 1% (>= 1 bulan) + 6 Syarat Ketat."
+        )
 
         return "\n".join(context_lines) if context_lines else "Belum ada riwayat pembelajaran sebelumnya. Ini adalah siklus awal."
 
@@ -456,12 +483,33 @@ class GeminiBrain:
             log.info(f"[GeminiBrain] Menolak rotasi: {current_pos.base_asset} belum mencapai BEP.")
             return False
 
+        knowledge_context = self.get_accumulated_knowledge_context()
+        holding_hours = (datetime.utcnow() - current_pos.entry_time).total_seconds() / 3600.0
+        days_held = holding_hours / 24.0
+
+        spot_capital = getattr(current_pos.spot_leg, "nominal_usdt", 0.0) or (current_pos.spot_leg.entry_price * current_pos.spot_leg.amount)
+        perp_capital = (getattr(current_pos.perp_leg, "nominal_usdt", 0.0) or (current_pos.perp_leg.entry_price * current_pos.perp_leg.amount)) / max(1, getattr(current_pos, "leverage", 1))
+        bep_capital = spot_capital + perp_capital
+        surplus_pct = (current_pos.net_pnl_usdt / bep_capital * 100.0) if bep_capital > 0 else 0.0
+
         prompt = (
-            f"EVALUASI ROTASI PELUANG AGI:\n"
-            f"Posisi Lama: {current_pos.base_asset} (Sudah BEP, Net PnL: ${current_pos.net_pnl_usdt:+.4f})\n"
-            f"Kandidat Baru: {candidate_opp.base_asset} (Net APY: {candidate_opp.net_apy_percent:.1f}%, "
-            f"Tren: {candidate_opp.funding_trend}, Konsistensi: {candidate_opp.consistency_score_percent:.0f}%)\n"
-            f"Apakah rotasi disetujui? Jawab 'SETUJUI' atau 'TOLAK' diikuti alasan 1 kalimat."
+            f"Anda adalah Chief Investment Officer (CIO) Delta-Neutral Quantitative AGI.\n\n"
+            f"{knowledge_context}\n\n"
+            f"EVALUASI ROTASI PELUANG:\n"
+            f"Posisi Lama: {current_pos.base_asset}\n"
+            f"- Modal BEP Posisi: ${bep_capital:.2f} USDT\n"
+            f"- Durasi Holding: {days_held:.1f} hari ({holding_hours:.1f} jam)\n"
+            f"- Net PnL di Atas BEP: +${current_pos.net_pnl_usdt:.4f} USDT ({surplus_pct:+.2f}% dari modal BEP)\n"
+            f"- Status Tenggat 1 Bulan: {'LEWAT 1 BULAN (Syarat Minimal Surplus 1%)' if days_held >= 30.0 else 'DALAM 1 BULAN (Target Surplus 5%)'}\n\n"
+            f"Kandidat Baru: {candidate_opp.base_asset}\n"
+            f"- Net APY: {candidate_opp.net_apy_percent:.1f}% (Prediksi Rate: {candidate_opp.predicted_next_funding_rate*100:+.4f}%/{candidate_opp.funding_interval_hours}h)\n"
+            f"- Konsistensi Rate: {candidate_opp.consistency_score_percent:.0f}% | Tren: {candidate_opp.funding_trend}\n"
+            f"- Estimasi BEP Baru: {candidate_opp.break_even_hours:.1f} jam\n\n"
+            f"Aturan Rotasi:\n"
+            f"1. Wajib BEP telah menutup 100% dari 4 biaya (Spot Beli + Jual, Futures Buka + Tutup).\n"
+            f"2. Surplus modal BEP: Wajib >= 5% jika < 1 bulan, dan WAJIB >= 1% jika >= 1 bulan.\n"
+            f"3. Peluang baru harus memiliki APY jauh lebih tinggi dan BEP cepat.\n\n"
+            f"Tugas: Apakah rotasi disetujui? Jawab 'SETUJUI' atau 'TOLAK' diikuti alasan analitis 1 kalimat."
         )
 
         ai_res = await self.call_gemini(prompt)

@@ -52,10 +52,15 @@ class BotSettings(BaseSettings):
     AUTO_ROTATE_OPPORTUNITIES: bool = Field(default=True, description="Otomatis rotasi modal ke pasangan baru dengan performa lebih tinggi")
     MIN_ROTATION_APY_DIFF: float = Field(default=12.0, description="Minimal selisih Net APY (%) untuk memicu rotasi modal")
     MIN_HOLDING_HOURS_BEFORE_ROTATION: float = Field(default=16.0, description="Minimal jam holding sebelum boleh dirotasi")
-    # Target profit surplus 5% dari modal portofolio/BEP dan tenggat waktu 1 bulan (30 hari)
-    MIN_PROFIT_SURPLUS_PERCENT: float = Field(default=0.05, description="Target profit surplus minimal di atas BEP (5% dari nilai BEP modal posisi) sebelum boleh rotasi")
-    MAX_HOLDING_DEADLINE_DAYS: float = Field(default=30.0, description="Tenggat waktu maksimal holding (1 bulan / 30 hari) untuk mencapai target surplus 5%")
+    # Target profit surplus 5% dari modal portofolio/BEP sebelum 1 bulan, dan WAJIB 1% setelah 1 bulan
+    MIN_PROFIT_SURPLUS_PERCENT: float = Field(default=0.05, description="Target profit surplus minimal di atas BEP (5% dari nilai BEP modal posisi) sebelum 1 bulan")
+    MIN_PROFIT_SURPLUS_AFTER_DEADLINE_PERCENT: float = Field(default=0.01, description="Wajib surplus minimal di atas BEP (1% dari nilai BEP modal posisi) setelah melewati tenggat 1 bulan")
+    MAX_HOLDING_DEADLINE_DAYS: float = Field(default=30.0, description="Tenggat waktu maksimal holding (1 bulan / 30 hari)")
     MIN_PROFIT_BEFORE_ROTATION_USDT: float = Field(default=0.5, description="[FALLBACK] Minimal profit nominal dalam USDT")
+
+    # Full Maker (Limit Post-Only) & Positive Spread Controls
+    USE_MAKER_ORDERS: bool = Field(default=True, description="Gunakan Full Maker (Limit Post-Only) untuk buka posisi agar fee murah & spread positif")
+    REQUIRE_POSITIVE_SPREAD: bool = Field(default=True, description="Wajib basis spread positif (perp price >= spot price) saat buka posisi")
 
     # Yield Vault (Profit Protection - Jangan Sentuh Uang Hasil Earn)
     VAULT_LOCK_PROFITS: bool = Field(default=True, description="Kunci seluruh profit hasil earn agar tidak dipakai trading")

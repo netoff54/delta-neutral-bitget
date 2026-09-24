@@ -140,10 +140,12 @@ class AutoRebalancer:
             if position_bep_capital <= 0.0 and capital_per_position:
                 position_bep_capital = capital_per_position
 
-            # Target surplus 5% dari total nilai BEP portofolio / modal posisi
-            surplus_pct_target = getattr(settings, "MIN_PROFIT_SURPLUS_PERCENT", 0.05)
-            min_profit_required = round(position_bep_capital * surplus_pct_target, 4)
-            min_profit_required = max(getattr(settings, "MIN_PROFIT_BEFORE_ROTATION_USDT", 0.5), min_profit_required)
+            # Target surplus 5% (sebelum 1 bulan) dan WAJIB minimal 1% (setelah 1 bulan) dari nilai BEP portofolio
+            surplus_5pct_target = getattr(settings, "MIN_PROFIT_SURPLUS_PERCENT", 0.05)
+            surplus_1pct_target = getattr(settings, "MIN_PROFIT_SURPLUS_AFTER_DEADLINE_PERCENT", 0.01)
+
+            min_profit_5pct = round(position_bep_capital * surplus_5pct_target, 4)
+            min_profit_1pct = round(position_bep_capital * surplus_1pct_target, 4)
             profit_pct_now = (pos.net_pnl_usdt / position_bep_capital * 100.0) if position_bep_capital > 0 else 0.0
 
             # Tenggat waktu 1 bulan (30 hari / 720 jam)
@@ -162,39 +164,49 @@ class AutoRebalancer:
                 continue
 
             # Syarat 2: WAJIB SUDAH BEP MUTLAK (Net PnL > 0)
-            # Tidak pernah keluar dalam posisi rugi sebelum seluruh fee transaksi tertutup penuh!
+            # Menutup 100% dari 4 biaya transaksi: Beli Spot + Jual Spot + Buka Perp + Tutup Perp!
             if not pos.is_bep_reached or pos.net_pnl_usdt <= 0.0:
                 log.info(
                     f"⏳ [Rotasi Ditunda] {pos.base_asset} BELUM BEP "
                     f"(Net PnL: ${pos.net_pnl_usdt:+.4f} | Real Funding: +${pos.realized_funding_usdt:.4f}). "
-                    f"Menunggu akumulasi funding fee menutup seluruh biaya transaksi round-trip sebelum rotasi."
+                    f"Menunggu akumulasi funding fee menutup seluruh 4 biaya beli & jual spot & future sebelum rotasi."
                 )
                 continue
 
-            # Syarat 3: SURPLUS 5% DARI NILAI BEP PORTOFOLIO DENGAN TENGGAT 1 BULAN
-            # Contoh: Modal $60 -> wajib surplus 5% = minimal profit bersih +$3.00 USDT di atas BEP!
-            if pos.net_pnl_usdt < min_profit_required:
-                if not is_deadline_passed:
+            # Syarat 3: SURPLUS 5% BEP (SEBELUM 1 BULAN) & WAJIB MINIMAL 1% SURPLUS BEP (SETELAH 1 BULAN)
+            if not is_deadline_passed:
+                # Masih dalam waktu 1 bulan: WAJIB surplus 5% dari nilai BEP portofolio
+                if pos.net_pnl_usdt < min_profit_5pct:
                     log.info(
                         f"⏳ [Rotasi Ditunda] {pos.base_asset}: Belum mencapai target surplus 5% dari nilai BEP "
-                        f"(${min_profit_required:.2f} USDT pada modal ${position_bep_capital:.2f}). "
-                        f"Surplus saat ini: +${pos.net_pnl_usdt:.4f} USDT ({profit_pct_now:+.2f}% / target +{surplus_pct_target*100:.1f}%). "
+                        f"(${min_profit_5pct:.2f} USDT pada modal ${position_bep_capital:.2f}). "
+                        f"Surplus saat ini: +${pos.net_pnl_usdt:.4f} USDT ({profit_pct_now:+.2f}% / target +{surplus_5pct_target*100:.1f}%). "
                         f"Tenggat 1 bulan tersisa: {days_left:.1f} hari ({holding_hours:.1f}/{deadline_hours:.0f}h). "
                         f"Tetap hold agar bunga terus membesar!"
                     )
                     continue
                 else:
                     log.info(
-                        f"⏰ [Tenggat 1 Bulan Tercapai] {pos.base_asset}: Telah di-hold {days_held:.1f} hari "
-                        f"(>= {deadline_days:.0f} hari). Posisi sudah BEP (+${pos.net_pnl_usdt:.4f} USDT). "
-                        f"Membuka izin rotasi ke taker baru berkinerja tinggi agar modal tidak stagnan."
+                        f"🎯 [Target Surplus 5% Tercapai!] {pos.base_asset}: Berhasil mencapai profit +${pos.net_pnl_usdt:.4f} USDT "
+                        f"({profit_pct_now:+.2f}% >= target 5.0% dari nilai BEP ${position_bep_capital:.2f}) dalam {days_held:.1f} hari. "
+                        f"Siap dievaluasi untuk rotasi!"
                     )
             else:
-                log.info(
-                    f"🎯 [Target Surplus 5% Tercapai!] {pos.base_asset}: Berhasil mencapai profit +${pos.net_pnl_usdt:.4f} USDT "
-                    f"({profit_pct_now:+.2f}% >= target 5.0% dari nilai BEP ${position_bep_capital:.2f}) dalam {days_held:.1f} hari. "
-                    f"Siap dievaluasi untuk rotasi!"
-                )
+                # Sudah melewati tenggat 1 bulan: TETAP WAJIB SURPLUS MINIMAL 1% DARI NILAI BEP
+                if pos.net_pnl_usdt < min_profit_1pct:
+                    log.info(
+                        f"⏳ [Rotasi Ditunda - Lewat 1 Bulan] {pos.base_asset}: Telah di-hold {days_held:.1f} hari, "
+                        f"namun belum mencapai syarat surplus minimal 1% dari nilai BEP (${min_profit_1pct:.2f} USDT). "
+                        f"Surplus saat ini: +${pos.net_pnl_usdt:.4f} USDT ({profit_pct_now:+.2f}% / target minimal +{surplus_1pct_target*100:.1f}%). "
+                        f"Tetap hold sampai minimal menghasilkan profit 1% di atas seluruh biaya transaksi!"
+                    )
+                    continue
+                else:
+                    log.info(
+                        f"⏰ [Tenggat 1 Bulan + Surplus 1% Terpenuhi] {pos.base_asset}: Telah di-hold {days_held:.1f} hari "
+                        f"dan memenuhi syarat surplus minimal 1% (+${pos.net_pnl_usdt:.4f} USDT >= ${min_profit_1pct:.2f} USDT). "
+                        f"Membuka izin rotasi ke taker baru berkinerja tinggi agar modal terus berkembang!"
+                    )
 
             # Syarat 4: Cek konsistensi koin baru harus > 75%
             if best_new_opp.consistency_score_percent < 75.0:

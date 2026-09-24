@@ -39,35 +39,43 @@ core/
 
 ## Logika Strategi
 
-### Buka Posisi
-1. Scan semua koin perpetual USDT-M di Bitget
-2. Filter: Rate > 0%, Konsistensi > 70%, APY net > 15%, Volume > $500K/24h
-3. Analisis historis 30 hari dari Bitget API
-4. AGI memilih taker terbaik (Gemini AI)
-5. Eksekusi: Buy Spot + Short Futures dengan nominal sama (delta = 0)
+### Buka Posisi — Full Maker & Spread Positif
+1. **Pemindaian Pasar:** Scan 200+ koin perpetual USDT-M di Bitget secara berkala.
+2. **Kriteria Seleksi:** Rate > 0%, Konsistensi 30D > 70%, APY net > 15%, Volume > $500K/24h.
+3. **Eksekusi Full Maker (Limit Post-Only):**
+   - Beli Spot di *Best Bid* (Maker Limit Order).
+   - Jual Perp di *Best Ask* (Maker Limit Order).
+   - Memangkas fee hingga 3x lipat lebih murah (Futures Maker 0.02% vs Taker 0.06%).
+4. **Jaminan Basis Spread Positif:**
+   - Menjamin harga jual Futures $\ge$ harga beli Spot (`Perp Price >= Spot Price`).
+   - Mencegah kerugian selisih harga awal sejak detik pertama posisi dibuka.
+5. **Delta-Neutral Sempurna:** Nominal Kaki Spot = Nominal Kaki Futures ($\Delta = 0$).
 
-### Panen Profit
-- Funding fee dibayar exchange setiap 1h/4h/8h (tergantung koin)
-- Ledger Bitget dicek setiap siklus monitoring (1 menit)
-- Profit dikompound ke modal trading
+### Panen Profit (Harvest & Compounding)
+- Funding fee dibayar exchange setiap 1h/4h/8h (tergantung koin).
+- Ledger Bitget dicek otomatis setiap siklus monitoring (1 menit).
+- Profit otomatis di-compound kembali ke modal trading untuk memperbesar alokasi posisi berikutnya.
 
-### BEP (Break Even Point)
-- BEP = Total Biaya Round-Trip (spot + futures entry + exit fees) / Funding Rate Per Siklus
-- Setelah BEP: Net PnL > 0, modal aman dari kerugian
+### BEP (Break Even Point) — Menutup 4 Biaya Transaksi Lengkap
+BEP tercapai HANYA jika `Net PnL > 0`, yaitu akumulasi funding fee riil telah melampaui **4 biaya transaksi lengkap**:
+1. Biaya Beli Spot (Spot Entry Fee)
+2. Biaya Buka Short Futures (Perp Entry Fee)
+3. Biaya Jual Spot saat Exit (Spot Exit Fee)
+4. Biaya Tutup Short Futures saat Exit (Perp Exit Fee)
+Serta memperhitungkan fluktuasi basis spread harga. Posisi DILARANG keluar jika 4 biaya ini belum tertutup lunas!
 
-### Rotasi Peluang (SMART - Anti Fee Churn & Target 5% BEP Surplus)
+### Rotasi Peluang (SMART - Anti Fee Churn & Target Surplus Bertingkat)
 Rotasi HANYA diizinkan jika memenuhi **Wajib BEP + 6 Syarat Ketat**:
-1. **Syarat 1 (Minimum Holding Time):** Sudah di-hold minimal ≥ 16 jam.
-2. **Syarat 2 (Wajib BEP Mutlak):** Posisi sudah BEP (`Net PnL > 0`). Biaya transaksi round-trip tertutup penuh. DILARANG keluar rugi.
-3. **Syarat 3 (Target Surplus 5% Nilai BEP Portofolio & Tenggat 1 Bulan):**
-   - Modal posisi memiliki target profit surplus **minimal +5% dari nilai BEP** (contoh: modal $60 -> wajib surplus minimal +$3.00 USDT).
-   - Memiliki **tenggat waktu 1 bulan (30 hari)** untuk mencapai target 5% ini.
-   - Sebelum 1 bulan: Rotasi ditunda jika belum mencapai target surplus 5%.
-   - Setelah 1 bulan: Jika sudah BEP dan yield koin mulai stagnan, diizinkan rotasi ke taker baru yang jauh lebih superior agar modal tidak mandek.
+1. **Syarat 1 (Minimum Holding Time):** Sudah di-hold minimal $\ge 16$ jam.
+2. **Syarat 2 (Wajib BEP Mutlak):** Posisi sudah BEP (`Net PnL > 0`). Biaya transaksi 4-kaki tertutup penuh lunas.
+3. **Syarat 3 (Surplus 5% BEP < 1 Bulan & WAJIB 1% BEP $\ge$ 1 Bulan):**
+   - **Sebelum 1 bulan (< 30 hari):** WAJIB surplus minimal $\ge 5\%$ dari nilai modal BEP portofolio (contoh: modal $60 -> wajib minimal profit bersih +$3.00 USDT di atas BEP).
+   - **Setelah 1 bulan ($\ge 30$ hari):** TETAP WAJIB surplus minimal $\ge 1\%$ dari nilai modal BEP portofolio (contoh: modal $60 -> wajib minimal profit bersih +$0.60 USDT di atas BEP).
+   - Bot TIDAK AKAN merotasi modal jika belum menghasilkan keuntungan bersih minimal!
 4. **Syarat 4 (Konsistensi Koin Baru):** Konsistensi historis rate positif koin baru > 75%.
-5. **Syarat 5 (Keunggulan APY Signifikan):** APY koin baru lebih tinggi minimal ≥ +12% APY dibanding koin lama.
+5. **Syarat 5 (Keunggulan APY Signifikan):** APY koin baru lebih tinggi minimal $\ge +12\%$ APY dibanding koin lama.
 6. **Syarat 6 (BEP Koin Baru Cepat):** Estimasi waktu balik modal (BEP) koin baru < 48 jam.
-7. **Konfirmasi AGI Gemini:** Review kualitatif AI menyetujui rotasi.
+7. **Konfirmasi AGI Gemini:** Review kualitatif AI menyetujui rotasi berdasarkan telemetri real-time.
 
 ## PnL Multi-Timeframe
 Sistem menyimpan snapshot saldo setiap 2 menit ke database.

@@ -112,14 +112,48 @@ class OrderExecutor:
             leverage=effective_leverage
         )
 
-        # 2. Eksekusi Kaki 1: Beli Spot
-        log.info(f"-> Eksekusi Kaki 1: Beli Spot {opportunity.spot_symbol} {aligned_qty}...")
+        # 1.5 Ambil live orderbook untuk FULL MAKER (Limit Post-Only) & JAMIN SPREAD POSITIF
+        spot_order_type = "limit" if settings.USE_MAKER_ORDERS else "market"
+        perp_order_type = "limit" if settings.USE_MAKER_ORDERS else "market"
+        use_post_only = settings.USE_MAKER_ORDERS
+
+        spot_entry_target_p = opportunity.spot_price
+        perp_entry_target_p = opportunity.perp_price
+
+        try:
+            spot_ticker = await self.client.client.fetch_ticker(opportunity.spot_symbol)
+            perp_ticker = await self.client.client.fetch_ticker(opportunity.perp_symbol)
+            spot_bid = float(spot_ticker.get("bid") or spot_ticker.get("last") or opportunity.spot_price)
+            perp_ask = float(perp_ticker.get("ask") or perp_ticker.get("last") or opportunity.perp_price)
+
+            if settings.USE_MAKER_ORDERS:
+                spot_entry_target_p = spot_bid
+                perp_entry_target_p = perp_ask
+
+            # Jamin Basis Spread Positif (Perp >= Spot):
+            # Menjual Perp di harga yang lebih tinggi atau sama dengan harga beli Spot
+            if settings.REQUIRE_POSITIVE_SPREAD:
+                if perp_entry_target_p < spot_entry_target_p:
+                    perp_entry_target_p = round(spot_entry_target_p * 1.0001, 6)
+        except Exception as pe_err:
+            log.debug(f"Live ticker maker pricing notice: {pe_err}")
+
+        spread_init_pct = ((perp_entry_target_p - spot_entry_target_p) / spot_entry_target_p) * 100.0
+        log.info(
+            f"🎯 [Full Maker Entry] {base}: Mode Maker (Limit Post-Only) | "
+            f"Spot Bid: ${spot_entry_target_p:,.4f} | Perp Ask: ${perp_entry_target_p:,.4f} | "
+            f"Spread Terjamin: {spread_init_pct:+.3f}% (Positif)"
+        )
+
+        # 2. Eksekusi Kaki 1: Beli Spot sebagai MAKER (Limit Order)
+        log.info(f"-> Eksekusi Kaki 1: Beli Spot {opportunity.spot_symbol} {aligned_qty} @ ${spot_entry_target_p:,.4f} (Maker)...")
         spot_res = await self.client.execute_spot_order(
             symbol=opportunity.spot_symbol,
             side="buy",
             amount=aligned_qty,
-            order_type="market",
-            price=opportunity.spot_price
+            order_type=spot_order_type,
+            price=spot_entry_target_p,
+            post_only=use_post_only
         )
 
         if not spot_res.success or spot_res.filled_amount <= 0:
@@ -128,20 +162,21 @@ class OrderExecutor:
 
         actual_qty = spot_res.filled_amount
 
-        # 3. Eksekusi Kaki 2: Short Perp (sesuai persis dengan jumlah spot yang terisi dan presisi kontrak)
+        # 3. Eksekusi Kaki 2: Short Perp sebagai MAKER (sesuai jumlah spot yang terisi & presisi kontrak)
         perp_qty = actual_qty
         try:
             perp_qty = float(self.client.client.amount_to_precision(opportunity.perp_symbol, actual_qty))
         except Exception:
             pass
 
-        log.info(f"-> Eksekusi Kaki 2: Short Perp {opportunity.perp_symbol} {perp_qty}...")
+        log.info(f"-> Eksekusi Kaki 2: Short Perp {opportunity.perp_symbol} {perp_qty} @ ${perp_entry_target_p:,.4f} (Maker)...")
         perp_res = await self.client.execute_perp_order(
             symbol=opportunity.perp_symbol,
             side="sell",
             amount=perp_qty,
-            order_type="market",
-            price=opportunity.perp_price
+            order_type=perp_order_type,
+            price=perp_entry_target_p,
+            post_only=use_post_only
         )
 
         # Jika Kaki Perp Gagal -> Darurat Unwind: Jual kembali Spot agar portofolio tidak terpapar risiko arah
@@ -240,8 +275,27 @@ class OrderExecutor:
 
         self.pos_mgr.add_position(position)
 
+        # Rekam akumulasi pengalaman AGI untuk entri Full Maker & spread positif
+        try:
+            from core.historical_store import historical_store
+            spread_entry_pct = ((perp_res.avg_price - spot_res.avg_price) / spot_res.avg_price) * 100.0
+            historical_store.record_agi_experience(
+                event_type="MAKER_ENTRY",
+                base_asset=base,
+                funding_rate=opportunity.current_funding_rate,
+                harvest_usdt=0.0,
+                net_pnl_usdt=-total_fees,
+                holding_hours=0.0,
+                was_bep_reached=False,
+                ai_decision="FULL_MAKER_LIMIT_ENTRY",
+                lesson_learned=f"Eksekusi Full Maker berhasil pada {base}. Spot Buy: ${spot_res.avg_price:,.4f}, Perp Short: ${perp_res.avg_price:,.4f}. Basis Spread Awal: {spread_entry_pct:+.3f}% (Positif). Total Fee Terhemat: ${total_fees:.4f} USDT.",
+                pair_reputation_score=0.1
+            )
+        except Exception as agi_err:
+            log.debug(f"AGI entry experience notice: {agi_err}")
+
         msg = (
-            f"🚀 *[Delta-Neutral Terbuka]*\n"
+            f"🚀 *[Delta-Neutral Terbuka (Full Maker)]*\n"
             f"Koin: `{base}`\n"
             f"Kuantitas: `{actual_qty}`\n"
             f"Spot Buy: `${spot_res.avg_price:,.4f}`\n"

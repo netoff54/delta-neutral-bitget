@@ -706,15 +706,28 @@ class BitgetClient:
                 pos.realized_funding_usdt = real_funding
                 pos.cumulative_funding_received = real_funding
 
-            # Estimasi biaya penutupan (exit taker fees: Spot 0.1%, Futures 0.06%)
-            est_exit_fees = (pos.spot_leg.amount * spot_curr_p * 0.0010) + (pos.perp_leg.amount * perp_curr_p * 0.0006)
-            total_roundtrip_fees = pos.total_fees_paid + est_exit_fees
+            # 4 KAKI BIAYA TRANSAKSI ROUND-TRIP (Spot Beli + Spot Jual + Futures Buka + Futures Tutup)
+            # Pastikan BEP benar-benar menutup seluruh biaya transaksi beli & jual tanpa ada yang terlewat:
+            entry_fees = pos.total_fees_paid
+            if entry_fees <= 0.0:
+                # Estimasi biaya entry (Spot Buy Maker/Taker + Perp Short Maker/Taker)
+                spot_entry_fee = pos.spot_leg.amount * pos.spot_leg.entry_price * (settings.SPOT_MAKER_FEE if settings.USE_MAKER_ORDERS else settings.SPOT_TAKER_FEE)
+                perp_entry_fee = pos.perp_leg.amount * pos.perp_leg.entry_price * (settings.PERP_MAKER_FEE if settings.USE_MAKER_ORDERS else settings.PERP_TAKER_FEE)
+                entry_fees = spot_entry_fee + perp_entry_fee
 
-            # Net PnL Bersih = Unrealized PnL + Realized Funding Fee - Total Biaya Transaksi Round-Trip
+            # Biaya exit lengkap (Spot Sell + Perp Close) - dihitung dengan batas konservatif taker
+            spot_exit_fee = pos.spot_leg.amount * spot_curr_p * settings.SPOT_TAKER_FEE
+            perp_exit_fee = pos.perp_leg.amount * perp_curr_p * settings.PERP_TAKER_FEE
+            est_exit_fees = spot_exit_fee + perp_exit_fee
+
+            # Total seluruh 4 biaya transaksi: Beli Spot + Jual Spot + Buka Perp + Tutup Perp
+            total_roundtrip_fees = round(entry_fees + est_exit_fees, 4)
+
+            # Net PnL Bersih = Unrealized PnL (Spread Basis) + Realized Funding Fee - Total 4 Biaya Transaksi
             net_pnl = pos.unrealized_pnl_usdt + pos.cumulative_funding_received - total_roundtrip_fees
             pos.net_pnl_usdt = round(net_pnl, 4)
 
-            # Status BEP tercapai jika Net PnL > 0 (Funding fee riil sudah melampaui seluruh biaya round-trip)
+            # Status BEP tercapai HANYA jika Net PnL > 0 (Funding fee riil telah melampaui seluruh 4 biaya transaksi)
             pos.is_bep_reached = (pos.net_pnl_usdt > 0.0)
 
         except Exception as e:
@@ -741,12 +754,18 @@ class BitgetClient:
         side: str,
         amount: float,
         order_type: str = "market",
-        price: Optional[float] = None
+        price: Optional[float] = None,
+        post_only: bool = False
     ) -> OrderExecutionResult:
-        """Eksekusi order di pasar Spot."""
+        """
+        Eksekusi order di pasar Spot.
+        Mendukung order_type='limit' dan post_only=True untuk Full Maker (fee murah & no slippage).
+        """
+        fee_rate = settings.SPOT_MAKER_FEE if (order_type == "limit" or post_only) else settings.SPOT_TAKER_FEE
+
         if settings.DRY_RUN:
             simulated_price = price or 100.0
-            fee = (amount * simulated_price) * settings.SPOT_TAKER_FEE
+            fee = (amount * simulated_price) * fee_rate
             return OrderExecutionResult(
                 success=True,
                 market_type="spot",
@@ -761,6 +780,9 @@ class BitgetClient:
 
         try:
             params = {}
+            if post_only:
+                params["postOnly"] = True
+
             if order_type == "market" and side == "buy" and (price is None or price <= 0):
                 try:
                     ticker = await self.client.fetch_ticker(symbol)
@@ -780,7 +802,7 @@ class BitgetClient:
             filled = float(filled_val) if filled_val is not None else float(amount)
             avg_val = order.get("average")
             avg_p = float(avg_val) if avg_val is not None else float(price or 0.0)
-            fee = float(order.get("fee", {}).get("cost", 0.0) if order.get("fee") else (filled * avg_p * settings.SPOT_TAKER_FEE))
+            fee = float(order.get("fee", {}).get("cost", 0.0) if order.get("fee") else (filled * avg_p * fee_rate))
 
             return OrderExecutionResult(
                 success=True,
@@ -811,12 +833,18 @@ class BitgetClient:
         amount: float,
         order_type: str = "market",
         price: Optional[float] = None,
-        reduce_only: bool = False
+        reduce_only: bool = False,
+        post_only: bool = False
     ) -> OrderExecutionResult:
-        """Eksekusi order di pasar USDT-M Futures (Perpetual)."""
+        """
+        Eksekusi order di pasar USDT-M Futures (Perpetual).
+        Mendukung order_type='limit' dan post_only=True untuk Full Maker (fee 0.02% vs taker 0.06%).
+        """
+        fee_rate = settings.PERP_MAKER_FEE if (order_type == "limit" or post_only) else settings.PERP_TAKER_FEE
+
         if settings.DRY_RUN:
             simulated_price = price or 100.0
-            fee = (amount * simulated_price) * settings.PERP_TAKER_FEE
+            fee = (amount * simulated_price) * fee_rate
             return OrderExecutionResult(
                 success=True,
                 market_type="perp",
@@ -831,6 +859,8 @@ class BitgetClient:
 
         try:
             params = {"marginMode": "cross"}
+            if post_only:
+                params["postOnly"] = True
             if reduce_only:
                 params["reduceOnly"] = True
 
@@ -846,7 +876,7 @@ class BitgetClient:
             filled = float(filled_val) if filled_val is not None else float(amount)
             avg_val = order.get("average")
             avg_p = float(avg_val) if avg_val is not None else float(price or 0.0)
-            fee = float(order.get("fee", {}).get("cost", 0.0) if order.get("fee") else (filled * avg_p * settings.PERP_TAKER_FEE))
+            fee = float(order.get("fee", {}).get("cost", 0.0) if order.get("fee") else (filled * avg_p * fee_rate))
 
             return OrderExecutionResult(
                 success=True,

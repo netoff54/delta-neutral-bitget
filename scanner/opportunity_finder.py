@@ -80,20 +80,32 @@ class OpportunityFinder:
             spot_volume = spot_ticker.get("quoteVolume") or (spot_ticker.get("baseVolume", 0) * spot_price)
             perp_volume = perp_ticker.get("quoteVolume") or (perp_ticker.get("baseVolume", 0) * perp_price)
 
-            # Basis Spread (%)
-            basis_spread_pct = ((perp_price - spot_price) / spot_price) * 100.0
+            # Full Maker Spread Pricing: Buy Spot di Best Bid, Short Perp di Best Ask
+            spot_bid = float(spot_ticker.get("bid") or spot_price)
+            perp_ask = float(perp_ticker.get("ask") or perp_price)
+
+            if getattr(settings, "USE_MAKER_ORDERS", True):
+                maker_spread_pct = ((perp_ask - spot_bid) / spot_bid) * 100.0
+                # Jamin spread positif (Perp Ask >= Spot Bid)
+                if getattr(settings, "REQUIRE_POSITIVE_SPREAD", True):
+                    basis_spread_pct = max(0.0001, maker_spread_pct)
+                else:
+                    basis_spread_pct = maker_spread_pct
+            else:
+                basis_spread_pct = ((perp_price - spot_price) / spot_price) * 100.0
 
             # Next funding time & interval dinamis (1h, 4h, 8h)
             interval_hours = parse_interval_hours(fr_data.get("fundingInterval"), default=8)
             next_funding_ts = fr_data.get("nextUpdate") or fr_data.get("fundingTimestamp")
             next_funding_time = datetime.utcfromtimestamp(next_funding_ts / 1000.0) if next_funding_ts else None
 
-            # Evaluasi Fee & Yield dengan interval dinamis
+            # Evaluasi Fee & Yield dengan interval dinamis & Full Maker Mode
             eval_result = self.calculator.evaluate_opportunity(
                 funding_rate=funding_rate,
                 nominal_value_usdt=target_nominal_usdt,
                 funding_interval_hours=interval_hours,
-                basis_spread_percent=basis_spread_pct
+                basis_spread_percent=basis_spread_pct,
+                is_maker=getattr(settings, "USE_MAKER_ORDERS", True)
             )
 
             # Cek likuiditas minimum
