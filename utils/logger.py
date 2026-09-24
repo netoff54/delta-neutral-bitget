@@ -11,8 +11,9 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
-
-console = Console(force_terminal=True)
+import os
+console_width = int(os.getenv("CONSOLE_WIDTH", "160"))
+console = Console(width=console_width, force_terminal=True, soft_wrap=True)
 
 def setup_logger(name: str = "delta_neutral", log_file: str = "bot.log") -> logging.Logger:
     logger = logging.getLogger(name)

@@ -89,28 +89,31 @@ class MarginGuard:
                 f"Est. Liq Price: ${pos.liquidation_price:,.4f}"
             )
 
-            # 1. Peringatan jika margin ratio mendekati ambang batas peringatan (e.g. 75%)
-            if pos.current_margin_ratio >= settings.MARGIN_CALL_THRESHOLD:
+            # 1. Peringatan jika margin ratio mendekati ambang batas peringatan (e.g. 85%)
+            warn_threshold = getattr(settings, "MARGIN_CALL_THRESHOLD", 0.85)
+            if pos.current_margin_ratio >= warn_threshold:
                 warn_msg = (
                     f"⚠️ *[MARGIN WARNING]*\n"
                     f"Posisi: `{pos.base_asset}`\n"
-                    f"Margin Ratio saat ini: `{pos.current_margin_ratio:.1%}`\n"
+                    f"Margin Ratio saat ini: `{pos.current_margin_ratio:.1%}` (Peringatan: {warn_threshold:.0%})\n"
                     f"Harga Saat Ini: `${current_perp_p:,.4f}`\n"
                     f"Harga Likuidasi: `${pos.liquidation_price:,.4f}`\n"
-                    f"Segera tambahkan margin atau kurangi ukuran posisi!"
+                    f"Auto-close darurat aktif jika menyentuh 95%!"
                 )
                 log.warning(warn_msg.replace("*", "").replace("`", ""))
                 await notifier.send_message(warn_msg)
 
-            # 2. Proteksi Ekstrem: Auto-close jika margin ratio melebihi 88% (mencegah penalty likuidasi exchange)
-            if pos.current_margin_ratio >= 0.88:
+            # 2. Proteksi Ekstrem: Auto-close jika margin ratio melebihi 95% (mencegah penalty likuidasi exchange)
+            auto_close_threshold = getattr(settings, "AUTO_CLOSE_MARGIN_RATIO", 0.95)
+            if pos.current_margin_ratio >= auto_close_threshold:
                 log.critical(
                     f"🚨 [EMERGENCY DELEVERAGE] Margin ratio untuk {pos.base_asset} mencapai "
-                    f"{pos.current_margin_ratio:.1%} (>= 88%). Menutup posisi secara otomatis untuk melindungi modal!"
+                    f"{pos.current_margin_ratio:.1%} (>= {auto_close_threshold:.0%}). "
+                    f"Menutup posisi secara otomatis untuk melindungi modal!"
                 )
                 await self.executor.close_delta_neutral_position(
                     position_id=pos.position_id,
-                    reason=f"Margin Ratio Kritis ({pos.current_margin_ratio:.1%})"
+                    reason=f"Margin Ratio Kritis ({pos.current_margin_ratio:.1%} >= {auto_close_threshold:.0%})"
                 )
 
 margin_guard = MarginGuard()

@@ -66,7 +66,8 @@ class BotSettings(BaseSettings):
     VAULT_LOCK_PROFITS: bool = Field(default=True, description="Kunci seluruh profit hasil earn agar tidak dipakai trading")
 
     # Risk Controls
-    MARGIN_CALL_THRESHOLD: float = Field(default=0.75, description="Margin ratio warning threshold (75%)")
+    MARGIN_CALL_THRESHOLD: float = Field(default=0.85, description="Margin ratio warning threshold (85%)")
+    AUTO_CLOSE_MARGIN_RATIO: float = Field(default=0.95, description="Ambang batas margin ratio untuk auto-close darurat (95%)")
     EMERGENCY_EXIT_FUNDING_RATE: float = Field(default=0.0, description="Zero tolerance untuk funding rate negatif (< 0.0% langsung exit)")
     EXIT_NEGATIVE_CYCLES_COUNT: int = Field(default=1, description="Negative funding cycle count to trigger exit")
 

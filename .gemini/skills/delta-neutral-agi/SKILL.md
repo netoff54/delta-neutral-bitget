@@ -145,6 +145,7 @@ AGI: Evaluasi BEP, profit surplus, koin kandidat terbaik
 - ❌ DILARANG rotasi sebelum BEP + profit surplus tercapai
 - ✅ Selalu gunakan saldo REAL dari Bitget API
 - ✅ Exit segera jika funding rate < 0%
+- ✅ Auto-close darurat hanya jika margin ratio >= 95% (mencegah penalti likuidasi exchange)
 - ✅ Compound semua profit ke modal
 
 ## File Konfigurasi

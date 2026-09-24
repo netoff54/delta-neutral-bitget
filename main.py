@@ -130,7 +130,6 @@ def display_ai_brain_status():
         ))
     except Exception as e:
         log.debug(f"AI Brain status display notice: {e}")
-
 def display_pnl_timeframes():
     """
     Menampilkan tabel PnL portofolio untuk semua timeframe (1D, 1W, 1M, 1Y).
@@ -143,16 +142,17 @@ def display_pnl_timeframes():
         table = Table(
             title="📈 Analisis PnL Portofolio Multi-Timeframe (Data REAL Bitget)",
             box=box.ROUNDED,
-            header_style="bold cyan"
+            header_style="bold cyan",
+            expand=False
         )
-        table.add_column("Timeframe", style="bold white", justify="center")
-        table.add_column("Modal Awal", style="yellow", justify="right")
-        table.add_column("Modal Kini", style="bold green", justify="right")
-        table.add_column("PnL (USDT)", justify="right")
-        table.add_column("PnL (%)", justify="right")
-        table.add_column("Funding Harvested", style="green", justify="right")
-        table.add_column("Avg/Hari", style="cyan", justify="right")
-        table.add_column("Annualized", style="bold magenta", justify="right")
+        table.add_column("Timeframe", style="bold white", justify="center", no_wrap=True)
+        table.add_column("Modal Awal", style="yellow", justify="right", no_wrap=True)
+        table.add_column("Modal Kini", style="bold green", justify="right", no_wrap=True)
+        table.add_column("PnL (USDT)", justify="right", no_wrap=True)
+        table.add_column("PnL (%)", justify="right", no_wrap=True)
+        table.add_column("Funding Harvested", style="green", justify="right", no_wrap=True)
+        table.add_column("Avg/Hari", style="cyan", justify="right", no_wrap=True)
+        table.add_column("Annualized", style="bold magenta", justify="right", no_wrap=True)
 
         for label in ["1D", "1W", "1M", "1Y"]:
             data = pnl_data.get(label, {})
@@ -212,30 +212,44 @@ def display_opportunities(opportunities, top_n: int = 10):
     table = Table(
         title=f"Hasil Analisis Pasar & Prediksi Funding Rate (Top {top_n} Peluang - Bitget 30D Data)",
         box=box.ROUNDED,
-        header_style="bold magenta"
+        header_style="bold magenta",
+        expand=False
     )
 
-    table.add_column("Koin", style="cyan", justify="left")
-    table.add_column("Interval", style="magenta", justify="center")
-    table.add_column("Rate / Siklus", style="green", justify="right")
-    table.add_column("Prediksi Next", style="bright_green", justify="right")
-    table.add_column("Konsistensi", style="yellow", justify="right")
-    table.add_column("30D Yield", style="bold green", justify="right")
-    table.add_column("30D Flip", style="bright_white", justify="center")
-    table.add_column("Taker Impas", style="bright_yellow", justify="right")
-    table.add_column("Net APY", style="bold green", justify="right")
-    table.add_column("Skor Data", style="bold cyan", justify="right")
-    table.add_column("Status / Kelayakan", justify="left")
+    table.add_column("Koin", style="cyan", justify="left", no_wrap=True)
+    table.add_column("Int", style="magenta", justify="center", no_wrap=True)
+    table.add_column("Rate/Siklus", style="green", justify="right", no_wrap=True)
+    table.add_column("Next Rate", style="bright_green", justify="right", no_wrap=True)
+    table.add_column("Konsistensi", style="yellow", justify="right", no_wrap=True)
+    table.add_column("30D APY", style="bold green", justify="right", no_wrap=True)
+    table.add_column("30D Flip", style="bright_white", justify="center", no_wrap=True)
+    table.add_column("Taker Impas", style="bright_yellow", justify="right", no_wrap=True)
+    table.add_column("Net APY", style="bold green", justify="right", no_wrap=True)
+    table.add_column("Skor", style="bold cyan", justify="right", no_wrap=True)
+    table.add_column("Status / Kelayakan", justify="left", no_wrap=True)
 
     for opp in opportunities[:top_n]:
-        status_text = (
-            "[bold green][OK] LAYAK[/bold green]"
-            if opp.is_eligible
-            else f"[dim red][X] {opp.rejection_reason}[/dim red]"
-        )
+        if opp.is_eligible:
+            status_text = "[bold green][OK] LAYAK[/bold green]"
+        else:
+            reason = opp.rejection_reason or "Tidak lolos"
+            if "Modal" in reason and "Min Capital" in reason:
+                status_text = "[dim red][X] Min Cap ($10)[/dim red]"
+            elif "Nominal kaki" in reason or "minimal order" in reason:
+                status_text = "[dim red][X] Min Order[/dim red]"
+            elif "Volume 24h" in reason:
+                status_text = "[dim red][X] Vol Rendah[/dim red]"
+            elif "Waktu impas" in reason:
+                status_text = "[dim red][X] Impas > 72h[/dim red]"
+            elif "Net APY" in reason:
+                status_text = "[dim red][X] APY < 15%[/dim red]"
+            elif "Funding rate bernilai negatif" in reason:
+                status_text = "[dim red][X] Rate Negatif[/dim red]"
+            else:
+                status_text = f"[dim red][X] {reason[:18]}[/dim red]"
 
         stats = opp.historical_30d_stats or opp.historical_7d_stats
-        y30d_str = f"{stats.thirty_day_cumulative_yield_pct:+.2f}%" if stats and stats.sample_count > 0 else "[dim]-[/dim]"
+        y30d_str = f"{stats.thirty_day_apy_pct:+.1f}%" if stats and stats.sample_count > 0 else "[dim]-[/dim]"
         flip_str = f"[green]{stats.thirty_day_flip_count}x[/green]" if stats and stats.thirty_day_flip_count == 0 else (f"[red]{stats.thirty_day_flip_count}x[/red]" if stats else "[dim]-[/dim]")
         taker_be_str = f"{stats.taker_fee_recovery_hours:.1f}h" if stats and stats.taker_fee_recovery_hours < 999 else f"{opp.break_even_hours:.1f}h"
 
@@ -264,43 +278,46 @@ def display_active_positions():
 
     table = Table(
         title=f"Posisi Delta-Neutral Aktif ({len(active_positions)}) - Status BEP & Net PnL Riil",
-        box=box.HEAVY_EDGE,
-        header_style="bold cyan"
+        box=box.ROUNDED,
+        header_style="bold cyan",
+        expand=False
     )
 
-    table.add_column("ID Posisi", style="dim", justify="left")
-    table.add_column("Koin", style="bold yellow", justify="left")
-    table.add_column("Kuantitas", style="white", justify="right")
-    table.add_column("Spot (Entry/Now)", style="green", justify="right")
-    table.add_column("Perp (Entry/Now)", style="magenta", justify="right")
-    table.add_column("Real Funding", style="bold green", justify="right")
-    table.add_column("Unrealized PnL", style="white", justify="right")
-    table.add_column("Net PnL", style="bold white", justify="right")
-    table.add_column("Status BEP", justify="center")
-    table.add_column("Proyeksi Next", style="bright_cyan", justify="right")
-    table.add_column("Margin Ratio", style="bold red", justify="right")
-    table.add_column("Status", style="bold green", justify="center")
+    table.add_column("Koin", style="bold yellow", justify="left", no_wrap=True)
+    table.add_column("Ukuran Posisi", style="white", justify="right", no_wrap=True)
+    table.add_column("Spot (Beli/Kini)", style="green", justify="right", no_wrap=True)
+    table.add_column("Perp (Jual/Kini)", style="magenta", justify="right", no_wrap=True)
+    table.add_column("Funding Panen", style="bold green", justify="right", no_wrap=True)
+    table.add_column("Unrealized PnL", style="white", justify="right", no_wrap=True)
+    table.add_column("Net PnL", style="bold white", justify="right", no_wrap=True)
+    table.add_column("Status BEP", justify="center", no_wrap=True)
+    table.add_column("Margin Ratio", style="bold red", justify="right", no_wrap=True)
+    table.add_column("Durasi", style="cyan", justify="right", no_wrap=True)
+
+    from utils.interval_helper import safe_hours_passed
 
     for pos in active_positions:
         pnl_color = "green" if pos.net_pnl_usdt >= 0 else "red"
         unreal_color = "green" if pos.unrealized_pnl_usdt >= 0 else "yellow"
-        bep_badge = "[bold green]✅ BEP Tercapai[/bold green]" if pos.is_bep_reached else f"[bold yellow]⏳ Menuju BEP ({pos.net_pnl_usdt:+.4f})[/bold yellow]"
-        interval = getattr(pos, "funding_interval_hours", 8) or 8
-        proj_badge = f"+${pos.projected_next_funding_payout:.4f}\n[dim]({interval}h)[/dim]" if pos.projected_next_funding_payout > 0 else "[dim]-[/dim]"
+        bep_badge = "[bold green]BEP Tercapai[/bold green]" if pos.is_bep_reached else f"[bold yellow]Menuju BEP ({pos.net_pnl_usdt:+.4f})[/bold yellow]"
+        holding_h = safe_hours_passed(pos.entry_time) if hasattr(pos, "entry_time") else 0.0
+
+        margin_color = "red" if pos.current_margin_ratio >= 0.85 else ("yellow" if pos.current_margin_ratio >= 0.50 else "green")
+        margin_str = f"[{margin_color}]{pos.current_margin_ratio:.1%} (Max 95%)[/{margin_color}]"
+
+        spot_nominal = getattr(pos.spot_leg, "nominal_usdt", 0.0) or (pos.spot_leg.amount * pos.spot_leg.entry_price)
 
         table.add_row(
-            pos.position_id,
             pos.base_asset,
-            f"{pos.spot_leg.amount:.4f}",
-            f"${pos.spot_leg.entry_price:,.2f} / ${pos.spot_leg.current_price:,.2f}",
-            f"${pos.perp_leg.entry_price:,.2f} / ${pos.perp_leg.current_price:,.2f}",
+            f"{pos.spot_leg.amount:.2f} {pos.base_asset} (~${spot_nominal:.1f})",
+            f"${pos.spot_leg.entry_price:,.4f} / ${pos.spot_leg.current_price:,.4f}",
+            f"${pos.perp_leg.entry_price:,.4f} / ${pos.perp_leg.current_price:,.4f}",
             f"+${pos.cumulative_funding_received:.4f}",
             f"[{unreal_color}]${pos.unrealized_pnl_usdt:+.4f}[/{unreal_color}]",
             f"[{pnl_color}]${pos.net_pnl_usdt:+.4f}[/{pnl_color}]",
             bep_badge,
-            proj_badge,
-            f"{pos.current_margin_ratio:.1%}",
-            pos.status
+            margin_str,
+            f"{holding_h:.1f} jam"
         )
 
     console.print(table)
