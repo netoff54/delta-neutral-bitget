@@ -36,173 +36,213 @@ class FundingGuard:
         self.executor = executor
         self.last_funding_times: Dict[str, datetime] = {}
 
+    async def emergency_close_position(self, pos: Any, reason: str = "Emergency Exit") -> bool:
+        """Penutupan darurat posisi delta-neutral."""
+        try:
+            pos_id = getattr(pos, "position_id", str(pos))
+            log.warning(f"🚨 [FundingGuard] Eksekusi emergency close untuk {pos_id}: {reason}")
+            return await self.executor.close_delta_neutral_position(position_id=pos_id, reason=reason)
+        except Exception as e:
+            log.error(f"[FundingGuard] Gagal melakukan emergency close posisi {pos}: {e}")
+            return False
+
     async def check_positions_funding(self):
-        """Pemeriksaan siklus funding untuk seluruh posisi aktif."""
-        active_positions = self.pos_mgr.get_active_positions()
-        if not active_positions:
-            return
+        """Pemeriksaan siklus funding untuk seluruh posisi aktif dengan proteksi exception penuh."""
+        try:
+            active_positions = self.pos_mgr.get_active_positions()
+            if not active_positions:
+                return
 
-        funding_rates_dict = await self.client.fetch_all_funding_rates()
+            funding_rates_dict = await self.client.fetch_all_funding_rates()
+            if not funding_rates_dict:
+                log.warning("[FundingGuard] Tidak dapat memperoleh data funding rates dari exchange saat ini. Menunda pemeriksaan.")
+                return
 
-        for pos in active_positions:
-            fr_data = funding_rates_dict.get(pos.perp_leg.symbol)
-            if not fr_data:
-                continue
-
-            current_rate = float(fr_data.get("fundingRate", 0.0))
-            pos_interval = int(getattr(pos, "funding_interval_hours", 8) or 8)
-            log.info(f"[FundingGuard] {pos.base_asset}: Funding Rate saat ini: {current_rate * 100:.4f}%/{pos_interval}h")
-
-            # Sinkronisasi status PnL riil dan funding fee dari ledger Bitget
-            prev_cumulative = pos.cumulative_funding_received
-            await self.client.update_position_live_pnl(pos)
-
-            # 1. Pemantauan Pra-Settlement (5 Menit Menuju Pembayaran Funding Fee)
-            countdown = await self.client.get_funding_settlement_countdown(pos.perp_leg.symbol)
-            if countdown.get("is_near_settlement"):
-                mins_left = countdown["minutes_until_settlement"]
-                proj_rate = countdown["current_projected_rate"]
-                log.info(
-                    f"⏱️ [Pra-Settlement 5 Menit] {pos.base_asset}: {mins_left}m menuju settlement. "
-                    f"Projected Rate: {proj_rate * 100:+.4f}%"
-                )
-                if settings.ENABLE_AI_BRAIN:
-                    ai_risk = await gemini_brain.evaluate_pre_settlement_risk(
-                        pos=pos,
-                        projected_rate=proj_rate,
-                        seconds_until_settlement=countdown["seconds_until_settlement"]
-                    )
-                    if ai_risk.get("action") == "EMERGENCY_EXIT":
-                        log.critical(
-                            f"🚨 [AI Brain Emergency Exit] {pos.base_asset}: {ai_risk.get('message')}. "
-                            f"Menutup posisi sebelum pemotongan funding fee minus!"
-                        )
-                        await self.executor.close_delta_neutral_position(
-                            position_id=pos.position_id,
-                            reason=f"AI Pre-Settlement Exit ({proj_rate * 100:+.4f}%)"
-                        )
+            for pos in active_positions:
+                try:
+                    fr_data = funding_rates_dict.get(pos.perp_leg.symbol)
+                    if not fr_data:
                         continue
 
-            # 2. Deteksi Pembalikan Funding Rate (Zero-Tolerance: Rate < 0.0% langsung exit)
-            if current_rate < settings.EMERGENCY_EXIT_FUNDING_RATE:
-                log.warning(
-                    f"🚨 [ZERO-TOLERANCE EXIT] Funding rate untuk {pos.base_asset} menjadi negatif "
-                    f"({current_rate * 100:.4f}% < 0.0%). Menutup seluruh posisi dan membatalkan delta-neutral di taker ini!"
-                )
-                success_close = await self.executor.close_delta_neutral_position(
-                    position_id=pos.position_id,
-                    reason=f"Zero-Tolerance Negative Funding ({current_rate * 100:.4f}%)"
-                )
-                if success_close:
+                    current_rate = float(fr_data.get("fundingRate", 0.0) or 0.0)
+                    pos_interval = int(getattr(pos, "funding_interval_hours", 8) or 8)
+                    log.info(f"[FundingGuard] {pos.base_asset}: Funding Rate saat ini: {current_rate * 100:.4f}%/{pos_interval}h")
+
+                    # Sinkronisasi status PnL riil dan funding fee dari ledger Bitget
+                    prev_cumulative = pos.cumulative_funding_received
                     try:
-                        historical_store.record_agi_experience(
-                            event_type="EMERGENCY_EXIT_NEGATIVE_RATE",
-                            base_asset=pos.base_asset,
-                            funding_rate=current_rate,
-                            harvest_usdt=pos.cumulative_funding_received,
-                            net_pnl_usdt=pos.net_pnl_usdt,
-                            holding_hours=safe_hours_passed(pos.entry_time),
-                            was_bep_reached=pos.is_bep_reached,
-                            ai_decision="EMERGENCY_EXIT",
-                            lesson_learned=f"Terkikis rate negatif ({current_rate*100:.4f}% < 0.0%). Exit darurat untuk selamatkan modal.",
-                            pair_reputation_score=-0.4
+                        await self.client.update_position_live_pnl(pos)
+                    except Exception as pnl_err:
+                        log.debug(f"[FundingGuard] Notice update live PnL {pos.base_asset}: {pnl_err}")
+
+                    # 1. Pemantauan Pra-Settlement (5 Menit Menuju Pembayaran Funding Fee)
+                    try:
+                        countdown = await self.client.get_funding_settlement_countdown(pos.perp_leg.symbol)
+                        if countdown.get("is_near_settlement"):
+                            mins_left = countdown["minutes_until_settlement"]
+                            proj_rate = countdown["current_projected_rate"]
+                            log.info(
+                                f"⏱️ [Pra-Settlement 5 Menit] {pos.base_asset}: {mins_left}m menuju settlement. "
+                                f"Projected Rate: {proj_rate * 100:+.4f}%"
+                            )
+                            if settings.ENABLE_AI_BRAIN:
+                                try:
+                                    ai_risk = await gemini_brain.evaluate_pre_settlement_risk(
+                                        pos=pos,
+                                        projected_rate=proj_rate,
+                                        seconds_until_settlement=countdown["seconds_until_settlement"]
+                                    )
+                                    if ai_risk.get("action") == "EMERGENCY_EXIT":
+                                        log.critical(
+                                            f"🚨 [AI Brain Emergency Exit] {pos.base_asset}: {ai_risk.get('message')}. "
+                                            f"Menutup posisi sebelum pemotongan funding fee minus!"
+                                        )
+                                        await self.executor.close_delta_neutral_position(
+                                            position_id=pos.position_id,
+                                            reason=f"AI Pre-Settlement Exit ({proj_rate * 100:+.4f}%)"
+                                        )
+                                        continue
+                                except Exception as ai_e:
+                                    log.warning(f"[FundingGuard] Notice AI pre-settlement eval: {ai_e}")
+                    except Exception as cd_err:
+                        log.debug(f"[FundingGuard] Notice countdown settlement: {cd_err}")
+
+                    # 2. Deteksi Pembalikan Funding Rate (Zero-Tolerance: Rate < 0.0% langsung exit)
+                    if current_rate < settings.EMERGENCY_EXIT_FUNDING_RATE:
+                        log.warning(
+                            f"🚨 [ZERO-TOLERANCE EXIT] Funding rate untuk {pos.base_asset} menjadi negatif "
+                            f"({current_rate * 100:.4f}% < 0.0%). Menutup seluruh posisi dan membatalkan delta-neutral di taker ini!"
                         )
-                    except Exception:
-                        pass
-
-                    await self.find_and_reopen_new_taker()
-                continue
-
-            # Proyeksi Dividen Dinamis Menit-ke-Menit
-            interval = int(getattr(pos, "funding_interval_hours", 8) or 8)
-            proj = gemini_brain.generate_funding_projection(pos, current_rate, interval)
-            pos.last_funding_rate = current_rate
-            pos.projected_next_funding_payout = proj["projected_next_payout_usdt"]
-            self.pos_mgr.update_position(pos)
-
-            log.info(
-                f"📊 [Proyeksi Funding 1-Menit] {pos.base_asset}: Rate {proj['current_rate_percent']:+.4f}%/{interval}h -> "
-                f"Est. Payout Berikutnya: +${proj['projected_next_payout_usdt']:.5f} USDT "
-                f"(Est. +${proj['projected_daily_usdt']:.4f}/hari | {proj['projected_annual_apy_percent']:.1f}% APY)"
-            )
-
-            # 3. Akumulasi Funding Fee Riil dari Ledger Bitget & Continuous Learning
-            if pos.realized_funding_usdt > prev_cumulative:
-                harvested = pos.realized_funding_usdt - prev_cumulative
-                pos.funding_payments_count += 1
-                self.pos_mgr.update_position(pos)
-
-                compounding_manager.add_harvest_profit(
-                    position_id=pos.position_id,
-                    base_asset=pos.base_asset,
-                    profit_usdt=harvested,
-                    funding_rate=current_rate
-                )
-
-                try:
-                    db.record_funding_harvest(
-                        position_id=pos.position_id,
-                        base_asset=pos.base_asset,
-                        perp_symbol=pos.perp_leg.symbol,
-                        funding_rate=current_rate,
-                        interval_hours=pos_interval,
-                        payment_usdt=harvested,
-                        compounded_amount_usdt=harvested
-                    )
-                except Exception as dbe:
-                    log.debug(f"[FundingGuard] Gagal rekam harvest ke DB: {dbe}")
-
-                log.info(
-                    f"💰 [Harvest Riil Ledger] Posisi {pos.base_asset} menerima funding fee: "
-                    f"+${harvested:.4f} USDT (Total Terkumpul: ${pos.cumulative_funding_received:.4f} | "
-                    f"Net PnL: ${pos.net_pnl_usdt:+.4f} | Status BEP: {'✅ Sudah BEP' if pos.is_bep_reached else '⏳ Belum BEP'})"
-                )
-
-                # Evaluasi & Pembelajaran Adaptif Gemini AI Brain
-                if settings.ENABLE_AI_BRAIN:
-                    await gemini_brain.evaluate_harvest_and_learn(
-                        pos=pos,
-                        harvest_amount_usdt=harvested,
-                        current_rate=current_rate
-                    )
-            elif pos.realized_funding_usdt == 0.0:
-                # Fallback estimasi siklus jika mode dry-run atau ledger delay
-                last_checked = self.last_funding_times.get(pos.position_id, pos.entry_time)
-                hours_passed = safe_hours_passed(last_checked)
-
-                if hours_passed >= interval:
-                    cycle_count = int(hours_passed // interval)
-                    harvested = pos.perp_leg.nominal_usdt * current_rate * cycle_count
-                    pos.cumulative_funding_received += harvested
-                    pos.funding_payments_count += cycle_count
-                    from datetime import timezone
-                    self.last_funding_times[pos.position_id] = datetime.now(timezone.utc)
-                    self.pos_mgr.update_position(pos)
-
-                    compounding_manager.add_harvest_profit(
-                        position_id=pos.position_id,
-                        base_asset=pos.base_asset,
-                        profit_usdt=harvested,
-                        funding_rate=current_rate
-                    )
-
-                    try:
-                        db.record_funding_harvest(
+                        success_close = await self.executor.close_delta_neutral_position(
                             position_id=pos.position_id,
-                            base_asset=pos.base_asset,
-                            perp_symbol=pos.perp_leg.symbol,
-                            funding_rate=current_rate,
-                            interval_hours=interval,
-                            payment_usdt=harvested,
-                            compounded_amount_usdt=harvested
+                            reason=f"Zero-Tolerance Negative Funding ({current_rate * 100:.4f}%)"
                         )
-                    except Exception as dbe:
-                        log.debug(f"[FundingGuard] Gagal rekam estimasi harvest ke DB: {dbe}")
+                        if success_close:
+                            try:
+                                historical_store.record_agi_experience(
+                                    event_type="EMERGENCY_EXIT_NEGATIVE_RATE",
+                                    base_asset=pos.base_asset,
+                                    funding_rate=current_rate,
+                                    harvest_usdt=pos.cumulative_funding_received,
+                                    net_pnl_usdt=pos.net_pnl_usdt,
+                                    holding_hours=safe_hours_passed(pos.entry_time),
+                                    was_bep_reached=pos.is_bep_reached,
+                                    ai_decision="EMERGENCY_EXIT",
+                                    lesson_learned=f"Terkikis rate negatif ({current_rate*100:.4f}% < 0.0%). Exit darurat untuk selamatkan modal.",
+                                    pair_reputation_score=-0.4
+                                )
+                            except Exception:
+                                pass
 
-                    log.info(
-                        f"💰 [Harvest Estimasi] Posisi {pos.base_asset} estimasi funding fee: "
-                        f"+${harvested:.4f} USDT (Total Terkumpul: ${pos.cumulative_funding_received:.4f})"
-                    )
+                            await self.find_and_reopen_new_taker()
+                        continue
+
+                    # Proyeksi Dividen Dinamis Menit-ke-Menit
+                    interval = int(getattr(pos, "funding_interval_hours", 8) or 8)
+                    try:
+                        proj = gemini_brain.generate_funding_projection(pos, current_rate, interval)
+                        pos.last_funding_rate = current_rate
+                        pos.projected_next_funding_payout = proj["projected_next_payout_usdt"]
+                        self.pos_mgr.update_position(pos)
+
+                        log.info(
+                            f"📊 [Proyeksi Funding 1-Menit] {pos.base_asset}: Rate {proj['current_rate_percent']:+.4f}%/{interval}h -> "
+                            f"Est. Payout Berikutnya: +${proj['projected_next_payout_usdt']:.5f} USDT "
+                            f"(Est. +${proj['projected_daily_usdt']:.4f}/hari | {proj['projected_annual_apy_percent']:.1f}% APY)"
+                        )
+                    except Exception as proj_err:
+                        log.debug(f"[FundingGuard] Notice proyeksi funding: {proj_err}")
+
+                    # 3. Akumulasi Funding Fee Riil dari Ledger Bitget & Continuous Learning
+                    if pos.realized_funding_usdt > prev_cumulative:
+                        harvested = pos.realized_funding_usdt - prev_cumulative
+                        pos.funding_payments_count += 1
+                        self.pos_mgr.update_position(pos)
+
+                        try:
+                            compounding_manager.add_harvest_profit(
+                                position_id=pos.position_id,
+                                base_asset=pos.base_asset,
+                                profit_usdt=harvested,
+                                funding_rate=current_rate
+                            )
+                        except Exception as cmp_err:
+                            log.debug(f"[FundingGuard] Compounding harvest notice: {cmp_err}")
+
+                        try:
+                            db.record_funding_harvest(
+                                position_id=pos.position_id,
+                                base_asset=pos.base_asset,
+                                perp_symbol=pos.perp_leg.symbol,
+                                funding_rate=current_rate,
+                                interval_hours=pos_interval,
+                                payment_usdt=harvested,
+                                compounded_amount_usdt=harvested
+                            )
+                        except Exception as dbe:
+                            log.debug(f"[FundingGuard] Gagal rekam harvest ke DB: {dbe}")
+
+                        log.info(
+                            f"💰 [Harvest Riil Ledger] Posisi {pos.base_asset} menerima funding fee: "
+                            f"+${harvested:.4f} USDT (Total Terkumpul: ${pos.cumulative_funding_received:.4f} | "
+                            f"Net PnL: ${pos.net_pnl_usdt:+.4f} | Status BEP: {'✅ Sudah BEP' if pos.is_bep_reached else '⏳ Belum BEP'})"
+                        )
+
+                        # Evaluasi & Pembelajaran Adaptif Gemini AI Brain
+                        if settings.ENABLE_AI_BRAIN:
+                            try:
+                                await gemini_brain.evaluate_harvest_and_learn(
+                                    pos=pos,
+                                    harvest_amount_usdt=harvested,
+                                    current_rate=current_rate
+                                )
+                            except Exception as aihl_err:
+                                log.warning(f"[FundingGuard] AI harvest learning notice: {aihl_err}")
+                    elif pos.realized_funding_usdt == 0.0:
+                        # Fallback estimasi siklus jika mode dry-run atau ledger delay
+                        last_checked = self.last_funding_times.get(pos.position_id, pos.entry_time)
+                        hours_passed = safe_hours_passed(last_checked)
+
+                        if hours_passed >= interval:
+                            cycle_count = int(hours_passed // interval)
+                            harvested = pos.perp_leg.nominal_usdt * current_rate * cycle_count
+                            pos.cumulative_funding_received += harvested
+                            pos.funding_payments_count += cycle_count
+                            from datetime import timezone
+                            self.last_funding_times[pos.position_id] = datetime.now(timezone.utc)
+                            self.pos_mgr.update_position(pos)
+
+                            try:
+                                compounding_manager.add_harvest_profit(
+                                    position_id=pos.position_id,
+                                    base_asset=pos.base_asset,
+                                    profit_usdt=harvested,
+                                    funding_rate=current_rate
+                                )
+                            except Exception as cmp_err:
+                                log.debug(f"[FundingGuard] Compounding harvest notice: {cmp_err}")
+
+                            try:
+                                db.record_funding_harvest(
+                                    position_id=pos.position_id,
+                                    base_asset=pos.base_asset,
+                                    perp_symbol=pos.perp_leg.symbol,
+                                    funding_rate=current_rate,
+                                    interval_hours=interval,
+                                    payment_usdt=harvested,
+                                    compounded_amount_usdt=harvested
+                                )
+                            except Exception as dbe:
+                                log.debug(f"[FundingGuard] Gagal rekam estimasi harvest ke DB: {dbe}")
+
+                            log.info(
+                                f"💰 [Harvest Estimasi] Posisi {pos.base_asset} estimasi funding fee: "
+                                f"+${harvested:.4f} USDT (Total Terkumpul: ${pos.cumulative_funding_received:.4f})"
+                            )
+                except Exception as pos_err:
+                    log.error(f"[FundingGuard] Kendala pemantauan posisi {getattr(pos, 'base_asset', 'UNKNOWN')}: {pos_err}")
+        except Exception as e:
+            log.error(f"[FundingGuard] Terjadi kendala saat memeriksa funding rate: {e}")
 
     async def find_and_reopen_new_taker(self):
         """

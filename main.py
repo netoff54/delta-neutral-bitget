@@ -349,8 +349,13 @@ def display_active_positions():
 
 from core.database import db
 
+_global_health_runner = None
+
 async def start_health_check_server():
     """Server HTTP mini untuk Render/Cloud Health Check, Riwayat Database, dan Memori Agentic."""
+    global _global_health_runner
+    if _global_health_runner is not None:
+        return _global_health_runner
     try:
         from aiohttp import web
         app = web.Application()
@@ -466,6 +471,7 @@ async def start_health_check_server():
         site = web.TCPSite(runner, "0.0.0.0", port)
         await site.start()
         log.info(f"🌐 [Health Server] Mini HTTP server aktif di port {port} (/health, /history, /agentic, /balance, /pnl).")
+        _global_health_runner = runner
         return runner
     except Exception as e:
         log.warning(f"Tidak dapat memulai health check server: {e}")
@@ -480,15 +486,20 @@ async def self_ping_loop():
     render_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
     ping_url = f"{render_url}/health" if render_url else f"http://localhost:{port}/health"
     log.info(f"🏓 [Self-Ping] Aktif — akan ping {ping_url} setiap 4 menit untuk mencegah spin-down.")
-    await asyncio.sleep(30)  # tunggu health server benar-benar siap
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    log.info(f"🏓 [Self-Ping] OK ({resp.status}) → {ping_url}")
-        except Exception as e:
-            log.warning(f"🏓 [Self-Ping] Gagal: {e}")
-        await asyncio.sleep(240)  # 4 menit
+    try:
+        await asyncio.sleep(30)  # tunggu health server benar-benar siap
+        while True:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        log.info(f"🏓 [Self-Ping] OK ({resp.status}) → {ping_url}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.warning(f"🏓 [Self-Ping] Gagal: {e}")
+            await asyncio.sleep(240)  # 4 menit
+    except asyncio.CancelledError:
+        pass
 
 async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
     """Loop otonom: Memindai pasar, memprediksi yield, auto-rebalance, dan memutar profit (compounding)."""
@@ -502,7 +513,10 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
     await bitget_client.initialize()
 
     # 2.1. Sinkronisasi posisi aktif langsung dari Bitget (Auto-Discovery Cloud/Restart)
-    await position_manager.sync_active_positions_from_exchange(bitget_client)
+    try:
+        await position_manager.sync_active_positions_from_exchange(bitget_client)
+    except Exception as se:
+        log.warning(f"Initial exchange position sync notice: {se}")
 
     try:
         while True:
@@ -667,20 +681,24 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
                 # Bersihkan memori RAM agar hemat biaya container di cloud
                 gc.collect()
 
+                # Sleep interval dengan pemantauan posisi aktif terisolasi
+                console.print(f"\n[dim]Menunggu {settings.SCAN_INTERVAL_SECONDS} detik untuk pemindaian pasar berikutnya (pemantauan posisi aktif tiap {settings.MONITOR_INTERVAL_SECONDS} detik)...[/dim]")
+                sleep_remaining = settings.SCAN_INTERVAL_SECONDS
+                monitor_interval = getattr(settings, "MONITOR_INTERVAL_SECONDS", 60)
+                while sleep_remaining > 0:
+                    step = min(monitor_interval, sleep_remaining)
+                    await asyncio.sleep(step)
+                    sleep_remaining -= step
+                    if sleep_remaining > 0 and position_manager.get_active_positions():
+                        try:
+                            await margin_guard.check_positions_health()
+                            await funding_guard.check_positions_funding()
+                        except Exception as guard_err:
+                            log.warning(f"[Monitor Intermediate] Kendala pemantauan posisi: {guard_err}")
+
             except Exception as cycle_err:
                 log.error(f"⚠️ [Loop Resiliency] Terjadi kendala siklus: {cycle_err}", exc_info=True)
                 await asyncio.sleep(5)
-
-            console.print(f"\n[dim]Menunggu {settings.SCAN_INTERVAL_SECONDS} detik untuk pemindaian pasar berikutnya (pemantauan posisi aktif tiap {settings.MONITOR_INTERVAL_SECONDS} detik)...[/dim]")
-            sleep_remaining = settings.SCAN_INTERVAL_SECONDS
-            monitor_interval = getattr(settings, "MONITOR_INTERVAL_SECONDS", 60)
-            while sleep_remaining > 0:
-                step = min(monitor_interval, sleep_remaining)
-                await asyncio.sleep(step)
-                sleep_remaining -= step
-                if sleep_remaining > 0 and position_manager.get_active_positions():
-                    await margin_guard.check_positions_health()
-                    await funding_guard.check_positions_funding()
 
     except asyncio.CancelledError:
         log.info("Autonomous loop dihentikan.")
@@ -729,11 +747,32 @@ async def main():
             await bitget_client.close()
         return
 
-    await run_autonomous_loop(auto_trade=args.auto_trade, manual_capital=args.capital)
+    # Indestructible Supervisor Loop:
+    # Memastikan bahwa bot tidak pernah berhenti (exit 1) di Render/Cloud.
+    # Jika terjadi kendala fatal, supervisor menangkapnya, mencatatnya, dan me-restart loop otonom secara mulus.
+    retry_delay = 5
+    while True:
+        try:
+            await run_autonomous_loop(auto_trade=args.auto_trade, manual_capital=args.capital)
+            break
+        except asyncio.CancelledError:
+            log.info("Bot dihentikan oleh sistem (Cancelled).")
+            break
+        except Exception as fatal_loop_err:
+            log.critical(
+                f"💥 [SUPERVISOR - Auto-Restart] Terjadi kendala fatal di loop otonom: {fatal_loop_err}",
+                exc_info=True
+            )
+            log.info(f"🔄 [SUPERVISOR] Memulai ulang autonomous trading loop dalam {retry_delay} detik...")
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(60, retry_delay * 2)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         console.print("\n[bold red]Bot dihentikan oleh pengguna.[/bold red]")
+        sys.exit(0)
+    except Exception as fatal_e:
+        log.critical(f"💥 [FATAL ROOT EXCEPTION]: {fatal_e}", exc_info=True)
         sys.exit(0)

@@ -33,21 +33,37 @@ class BitgetClient:
         self.client = ccxt.bitget(config)
         self.markets_loaded = False
 
-    async def initialize(self):
-        """Memuat daftar market Bitget (Spot & Futures)."""
+    async def initialize(self, max_retries: int = 5):
+        """Memuat daftar market Bitget (Spot & Futures) dengan retry berjenjang."""
         if not self.markets_loaded:
             log.info("Memuat pasar Bitget (Spot & USDT-M Futures)...")
-            await self.client.load_markets()
-            self.markets_loaded = True
-            log.info(f"Berhasil memuat {len(self.client.markets)} pasar dari Bitget.")
+            for attempt in range(1, max_retries + 1):
+                try:
+                    await self.client.load_markets()
+                    self.markets_loaded = True
+                    log.info(f"Berhasil memuat {len(self.client.markets)} pasar dari Bitget.")
+                    return
+                except Exception as e:
+                    log.warning(f"Percobaan {attempt}/{max_retries} memuat pasar Bitget gagal: {e}")
+                    if attempt == max_retries:
+                        log.error(f"Gagal memuat pasar Bitget setelah {max_retries} percobaan. Melanjutkan dengan pasar kosong.")
+                        return
+                    await asyncio.sleep(2 * attempt)
 
     async def close(self):
         """Menutup koneksi client."""
-        await self.client.close()
+        try:
+            await self.client.close()
+        except Exception:
+            pass
 
     async def fetch_all_funding_rates(self) -> Dict[str, Any]:
-        """Mengambil data funding rate untuk seluruh kontrak futures."""
-        return await self.client.fetch_funding_rates()
+        """Mengambil data funding rate untuk seluruh kontrak futures dengan proteksi error."""
+        try:
+            return await self.client.fetch_funding_rates()
+        except Exception as e:
+            log.warning(f"Gagal mengambil funding rates dari exchange: {e}")
+            return {}
 
     async def fetch_fund_rates_and_intervals(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -115,12 +131,20 @@ class BitgetClient:
             return []
 
     async def fetch_tickers(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
-        """Mengambil ticker harga terkini."""
-        return await self.client.fetch_tickers(symbols)
+        """Mengambil ticker harga terkini dengan proteksi error."""
+        try:
+            return await self.client.fetch_tickers(symbols)
+        except Exception as e:
+            log.warning(f"Gagal mengambil tickers dari exchange: {e}")
+            return {}
 
     async def fetch_tickers_by_type(self, market_type: str = "swap") -> Dict[str, Any]:
-        """Mengambil ticker berdasarkan tipe pasar ('spot' atau 'swap')."""
-        return await self.client.fetch_tickers(params={"type": market_type})
+        """Mengambil ticker berdasarkan tipe pasar ('spot' atau 'swap') dengan proteksi error."""
+        try:
+            return await self.client.fetch_tickers(params={"type": market_type})
+        except Exception as e:
+            log.warning(f"Gagal mengambil tickers ({market_type}) dari exchange: {e}")
+            return {}
 
     async def fetch_otc_balance(self) -> float:
         """
