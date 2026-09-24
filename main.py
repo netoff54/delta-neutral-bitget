@@ -319,10 +319,32 @@ async def start_health_check_server():
         log.warning(f"Tidak dapat memulai health check server: {e}")
         return None
 
+async def self_ping_loop():
+    """Ping endpoint /health milik sendiri setiap 4 menit agar Render Free Tier tidak spin-down.
+    Menggunakan RENDER_EXTERNAL_URL jika tersedia, fallback ke localhost.
+    """
+    import aiohttp
+    port = int(os.getenv("PORT", "10000"))
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+    ping_url = f"{render_url}/health" if render_url else f"http://localhost:{port}/health"
+    log.info(f"🏓 [Self-Ping] Aktif — akan ping {ping_url} setiap 4 menit untuk mencegah spin-down.")
+    await asyncio.sleep(30)  # tunggu health server benar-benar siap
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    log.info(f"🏓 [Self-Ping] OK ({resp.status}) → {ping_url}")
+        except Exception as e:
+            log.warning(f"🏓 [Self-Ping] Gagal: {e}")
+        await asyncio.sleep(240)  # 4 menit
+
 async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
     """Loop otonom: Memindai pasar, memprediksi yield, auto-rebalance, dan memutar profit (compounding)."""
     # 1. Buka port HTTP Health Server terlebih dahulu agar Cloud (Render/Railway) langsung mendeteksi status LIVE
     health_runner = await start_health_check_server()
+
+    # 1.1. Jalankan self-ping background task untuk mencegah Render Free Tier spin-down
+    ping_task = asyncio.create_task(self_ping_loop())
 
     # 2. Inisialisasi koneksi exchange
     await bitget_client.initialize()
@@ -471,6 +493,11 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
     except asyncio.CancelledError:
         log.info("Autonomous loop dihentikan.")
     finally:
+        ping_task.cancel()
+        try:
+            await ping_task
+        except asyncio.CancelledError:
+            pass
         if health_runner:
             try:
                 await health_runner.cleanup()
