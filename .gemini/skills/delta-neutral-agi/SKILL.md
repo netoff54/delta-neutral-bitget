@@ -55,15 +55,19 @@ core/
 - BEP = Total Biaya Round-Trip (spot + futures entry + exit fees) / Funding Rate Per Siklus
 - Setelah BEP: Net PnL > 0, modal aman dari kerugian
 
-### Rotasi Peluang (SMART - Anti Fee Churn)
-Rotasi HANYA diizinkan jika:
-1. Sudah holding ≥ 16 jam
-2. BEP sudah tercapai (Net PnL > 0)
-3. **Ada profit NYATA di atas BEP ≥ $0.50 USDT** (kunci anti-churn)
-4. Konsistensi koin baru > 75%
-5. APY koin baru lebih tinggi ≥ 12% APY
-6. BEP koin baru < 48 jam
-7. AGI menyetujui rotasi
+### Rotasi Peluang (SMART - Anti Fee Churn & Target 5% BEP Surplus)
+Rotasi HANYA diizinkan jika memenuhi **Wajib BEP + 6 Syarat Ketat**:
+1. **Syarat 1 (Minimum Holding Time):** Sudah di-hold minimal ≥ 16 jam.
+2. **Syarat 2 (Wajib BEP Mutlak):** Posisi sudah BEP (`Net PnL > 0`). Biaya transaksi round-trip tertutup penuh. DILARANG keluar rugi.
+3. **Syarat 3 (Target Surplus 5% Nilai BEP Portofolio & Tenggat 1 Bulan):**
+   - Modal posisi memiliki target profit surplus **minimal +5% dari nilai BEP** (contoh: modal $60 -> wajib surplus minimal +$3.00 USDT).
+   - Memiliki **tenggat waktu 1 bulan (30 hari)** untuk mencapai target 5% ini.
+   - Sebelum 1 bulan: Rotasi ditunda jika belum mencapai target surplus 5%.
+   - Setelah 1 bulan: Jika sudah BEP dan yield koin mulai stagnan, diizinkan rotasi ke taker baru yang jauh lebih superior agar modal tidak mandek.
+4. **Syarat 4 (Konsistensi Koin Baru):** Konsistensi historis rate positif koin baru > 75%.
+5. **Syarat 5 (Keunggulan APY Signifikan):** APY koin baru lebih tinggi minimal ≥ +12% APY dibanding koin lama.
+6. **Syarat 6 (BEP Koin Baru Cepat):** Estimasi waktu balik modal (BEP) koin baru < 48 jam.
+7. **Konfirmasi AGI Gemini:** Review kualitatif AI menyetujui rotasi.
 
 ## PnL Multi-Timeframe
 Sistem menyimpan snapshot saldo setiap 2 menit ke database.

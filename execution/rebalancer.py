@@ -130,10 +130,30 @@ class AutoRebalancer:
             await self.client.update_position_live_pnl(pos)
 
             # ================================================================
-            # SYARAT ROTASI KETAT - Mencegah Fee Churn & Memastikan Pertumbuhan
+            # 6 SYARAT KETAT ROTASI - Mencegah Fee Churn & Memastikan Pertumbuhan
             # ================================================================
 
-            # Syarat 1: Minimum holding time
+            # Hitung nilai modal pokok BEP posisi (Spot + Futures Margin)
+            spot_capital = getattr(pos.spot_leg, "nominal_usdt", 0.0) or (pos.spot_leg.entry_price * pos.spot_leg.amount)
+            perp_capital = (getattr(pos.perp_leg, "nominal_usdt", 0.0) or (pos.perp_leg.entry_price * pos.perp_leg.amount)) / max(1, getattr(pos, "leverage", 1))
+            position_bep_capital = spot_capital + perp_capital
+            if position_bep_capital <= 0.0 and capital_per_position:
+                position_bep_capital = capital_per_position
+
+            # Target surplus 5% dari total nilai BEP portofolio / modal posisi
+            surplus_pct_target = getattr(settings, "MIN_PROFIT_SURPLUS_PERCENT", 0.05)
+            min_profit_required = round(position_bep_capital * surplus_pct_target, 4)
+            min_profit_required = max(getattr(settings, "MIN_PROFIT_BEFORE_ROTATION_USDT", 0.5), min_profit_required)
+            profit_pct_now = (pos.net_pnl_usdt / position_bep_capital * 100.0) if position_bep_capital > 0 else 0.0
+
+            # Tenggat waktu 1 bulan (30 hari / 720 jam)
+            deadline_days = getattr(settings, "MAX_HOLDING_DEADLINE_DAYS", 30.0)
+            deadline_hours = deadline_days * 24.0
+            is_deadline_passed = holding_hours >= deadline_hours
+            days_held = holding_hours / 24.0
+            days_left = max(0.0, (deadline_hours - holding_hours) / 24.0)
+
+            # Syarat 1: Minimum holding time awal (minimal 16 jam untuk stabilitas awal)
             if holding_hours < settings.MIN_HOLDING_HOURS_BEFORE_ROTATION:
                 log.info(
                     f"⏳ [Rotasi Ditunda] {pos.base_asset}: Baru {holding_hours:.1f} jam "
@@ -141,25 +161,40 @@ class AutoRebalancer:
                 )
                 continue
 
-            # Syarat 2: HARUS sudah BEP (Net PnL > 0)
+            # Syarat 2: WAJIB SUDAH BEP MUTLAK (Net PnL > 0)
+            # Tidak pernah keluar dalam posisi rugi sebelum seluruh fee transaksi tertutup penuh!
             if not pos.is_bep_reached or pos.net_pnl_usdt <= 0.0:
                 log.info(
-                    f"⏳ [Rotasi Ditunda] {pos.base_asset} belum BEP "
+                    f"⏳ [Rotasi Ditunda] {pos.base_asset} BELUM BEP "
                     f"(Net PnL: ${pos.net_pnl_usdt:+.4f} | Real Funding: +${pos.realized_funding_usdt:.4f}). "
-                    f"Menunggu funding fee menutupi seluruh biaya round-trip sebelum rotasi."
+                    f"Menunggu akumulasi funding fee menutup seluruh biaya transaksi round-trip sebelum rotasi."
                 )
                 continue
 
-            # Syarat 3: HARUS ada profit surplus di atas BEP (KUNCI PERTUMBUHAN)
-            # Ini memastikan setelah rotasi, modal bersih tetap lebih besar dari modal awal
-            min_profit_required = getattr(settings, "MIN_PROFIT_BEFORE_ROTATION_USDT", 0.5)
+            # Syarat 3: SURPLUS 5% DARI NILAI BEP PORTOFOLIO DENGAN TENGGAT 1 BULAN
+            # Contoh: Modal $60 -> wajib surplus 5% = minimal profit bersih +$3.00 USDT di atas BEP!
             if pos.net_pnl_usdt < min_profit_required:
+                if not is_deadline_passed:
+                    log.info(
+                        f"⏳ [Rotasi Ditunda] {pos.base_asset}: Belum mencapai target surplus 5% dari nilai BEP "
+                        f"(${min_profit_required:.2f} USDT pada modal ${position_bep_capital:.2f}). "
+                        f"Surplus saat ini: +${pos.net_pnl_usdt:.4f} USDT ({profit_pct_now:+.2f}% / target +{surplus_pct_target*100:.1f}%). "
+                        f"Tenggat 1 bulan tersisa: {days_left:.1f} hari ({holding_hours:.1f}/{deadline_hours:.0f}h). "
+                        f"Tetap hold agar bunga terus membesar!"
+                    )
+                    continue
+                else:
+                    log.info(
+                        f"⏰ [Tenggat 1 Bulan Tercapai] {pos.base_asset}: Telah di-hold {days_held:.1f} hari "
+                        f"(>= {deadline_days:.0f} hari). Posisi sudah BEP (+${pos.net_pnl_usdt:.4f} USDT). "
+                        f"Membuka izin rotasi ke taker baru berkinerja tinggi agar modal tidak stagnan."
+                    )
+            else:
                 log.info(
-                    f"⏳ [Rotasi Ditunda] {pos.base_asset}: Profit belum mencukupi untuk rotasi. "
-                    f"(Net PnL: ${pos.net_pnl_usdt:+.4f} | Minimum profit rotasi: ${min_profit_required:.4f} USDT). "
-                    f"Tetap hold untuk akumulasi profit lebih banyak dulu."
+                    f"🎯 [Target Surplus 5% Tercapai!] {pos.base_asset}: Berhasil mencapai profit +${pos.net_pnl_usdt:.4f} USDT "
+                    f"({profit_pct_now:+.2f}% >= target 5.0% dari nilai BEP ${position_bep_capital:.2f}) dalam {days_held:.1f} hari. "
+                    f"Siap dievaluasi untuk rotasi!"
                 )
-                continue
 
             # Syarat 4: Cek konsistensi koin baru harus > 75%
             if best_new_opp.consistency_score_percent < 75.0:
@@ -169,7 +204,7 @@ class AutoRebalancer:
                 )
                 continue
 
-            # Syarat 5: APY koin baru harus lebih baik signifikan
+            # Syarat 5: APY koin baru harus lebih baik signifikan (>= MIN_ROTATION_APY_DIFF)
             old_opp = next((o for o in opportunities if o.base_asset == pos.base_asset), None)
             old_apy = old_opp.net_apy_percent if old_opp else 0.0
             apy_gain = best_new_opp.net_apy_percent - old_apy
@@ -182,7 +217,7 @@ class AutoRebalancer:
                 )
                 continue
 
-            # Syarat 6: Estimasi BEP koin baru harus < 48 jam
+            # Syarat 6: Estimasi BEP koin baru harus cepat (< 48 jam)
             new_bep_hours = best_new_opp.break_even_hours
             if new_bep_hours > 48.0:
                 log.info(
@@ -191,7 +226,7 @@ class AutoRebalancer:
                 )
                 continue
 
-            # Konsultasi AI Brain sebelum eksekusi rotasi
+            # Konfirmasi Kualitatif AI Gemini Brain
             if settings.ENABLE_AI_BRAIN:
                 ai_approved = await gemini_brain.evaluate_rotation_candidate(
                     current_pos=pos,
@@ -204,15 +239,15 @@ class AutoRebalancer:
                     )
                     continue
 
-            # ✅ Semua syarat terpenuhi - Eksekusi Rotasi
+            # ✅ Seluruh 6 Syarat Ketat & Target 5% / Tenggat 1 Bulan Terpenuhi - Eksekusi Rotasi
             rotation_msg = (
-                f"🔄 *[ROTASI PELUANG TERDETEKSI]*\n"
+                f"🔄 *[ROTASI PELUANG TERVERIFIKASI]*\n"
                 f"Menutup: `{pos.base_asset}` (Net APY: `{old_apy:.1f}%`)\n"
                 f"Rotasi ke: `{best_new_opp.base_asset}` (Net APY: `{best_new_opp.net_apy_percent:.1f}%`)\n"
-                f"Keuntungan Yield: `+{apy_gain:.1f}% APY`\n"
-                f"Profit yang Sudah Diraih: `+${pos.net_pnl_usdt:.4f} USDT` (akan dikunci ke modal)\n"
-                f"BEP Koin Baru: `{new_bep_hours:.1f} jam`\n"
-                f"Holding Hours: `{holding_hours:.1f} jam`"
+                f"Keuntungan APY: `+{apy_gain:.1f}% APY`\n"
+                f"Profit Terkunci: `+${pos.net_pnl_usdt:.4f} USDT` ({profit_pct_now:+.2f}% dari modal BEP ${position_bep_capital:.2f})\n"
+                f"Waktu Holding: `{days_held:.1f} hari` (`{holding_hours:.1f} jam`)\n"
+                f"BEP Koin Baru: `{new_bep_hours:.1f} jam`"
             )
             log.info(rotation_msg.replace("*", "").replace("`", ""))
             await notifier.send_message(rotation_msg)

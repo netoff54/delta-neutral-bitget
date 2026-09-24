@@ -52,8 +52,10 @@ class BotSettings(BaseSettings):
     AUTO_ROTATE_OPPORTUNITIES: bool = Field(default=True, description="Otomatis rotasi modal ke pasangan baru dengan performa lebih tinggi")
     MIN_ROTATION_APY_DIFF: float = Field(default=12.0, description="Minimal selisih Net APY (%) untuk memicu rotasi modal")
     MIN_HOLDING_HOURS_BEFORE_ROTATION: float = Field(default=16.0, description="Minimal jam holding sebelum boleh dirotasi")
-    # Profit minimal yang harus terakumulasi (dalam USDT) sebelum rotasi diizinkan
-    MIN_PROFIT_BEFORE_ROTATION_USDT: float = Field(default=0.5, description="Profit minimum (USDT) yang harus diraih sebelum rotasi agar modal berkembang nyata")
+    # Target profit surplus 5% dari modal portofolio/BEP dan tenggat waktu 1 bulan (30 hari)
+    MIN_PROFIT_SURPLUS_PERCENT: float = Field(default=0.05, description="Target profit surplus minimal di atas BEP (5% dari nilai BEP modal posisi) sebelum boleh rotasi")
+    MAX_HOLDING_DEADLINE_DAYS: float = Field(default=30.0, description="Tenggat waktu maksimal holding (1 bulan / 30 hari) untuk mencapai target surplus 5%")
+    MIN_PROFIT_BEFORE_ROTATION_USDT: float = Field(default=0.5, description="[FALLBACK] Minimal profit nominal dalam USDT")
 
     # Yield Vault (Profit Protection - Jangan Sentuh Uang Hasil Earn)
     VAULT_LOCK_PROFITS: bool = Field(default=True, description="Kunci seluruh profit hasil earn agar tidak dipakai trading")
