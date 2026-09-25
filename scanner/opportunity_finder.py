@@ -315,6 +315,12 @@ class OpportunityFinder:
             opp.historical_30d_stats = stats_deep
             opp.historical_7d_stats = stats_deep
 
+            # Tarik konsistensi rate positif dari seluruh horizon historis 120 hari (4 bulan) secara akurat
+            if stats_deep and stats_deep.sample_count > 0:
+                opp.consistency_score_percent = stats_deep.positive_consistency_pct
+            else:
+                opp.consistency_score_percent = hist_stats["consistency_pct"]
+
             # Hitung skor performa komposit berbasis data (disesuaikan dengan interval 4h/8h/1h)
             base_comp_score = performance_scorer.calculate_composite_score(
                 predicted_next_rate=pred_rate,
@@ -342,7 +348,7 @@ class OpportunityFinder:
                 opp.rejection_reason = f"Prediksi funding rate ke depan negatif ({pred_rate*100:.4f}%)"
             elif opp.consistency_score_percent < 70.0:
                 opp.is_eligible = False
-                opp.rejection_reason = f"Konsistensi historis rendah ({opp.consistency_score_percent:.0f}% < 70%)"
+                opp.rejection_reason = f"Konsistensi historis 120 hari rendah ({opp.consistency_score_percent:.1f}% < 70%)"
             # Jika dalam 120 hari (4 bulan) koin sering berbalik negatif (> 10 kali flip)
             elif stats_deep and stats_deep.negative_flip_count > 10:
                 opp.is_eligible = False

@@ -278,13 +278,14 @@ def display_opportunities(opportunities, top_n: int = 10):
         flip_count = getattr(stats, "one_twenty_day_flip_count", getattr(stats, "sixty_day_flip_count", getattr(stats, "thirty_day_flip_count", 0))) if stats else 0
         flip_str = f"[green]{flip_count}x[/green]" if stats and flip_count == 0 else (f"[red]{flip_count}x[/red]" if stats else "[dim]-[/dim]")
         taker_be_str = f"{stats.taker_fee_recovery_hours:.1f}h" if stats and stats.taker_fee_recovery_hours < 999 else f"{opp.break_even_hours:.1f}h"
+        consistency_str = f"{opp.consistency_score_percent:.1f}%" if opp.consistency_score_percent < 99.99 else "100%"
 
         table.add_row(
             opp.base_asset,
             f"{opp.funding_interval_hours}h",
             f"{opp.current_funding_rate * 100:.4f}%",
             f"{opp.predicted_next_funding_rate * 100:.4f}%",
-            f"{opp.consistency_score_percent:.0f}%",
+            consistency_str,
             y120d_str,
             flip_str,
             taker_be_str,

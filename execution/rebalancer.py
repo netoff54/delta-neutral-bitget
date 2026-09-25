@@ -219,7 +219,7 @@ class AutoRebalancer:
                 if best_new_opp.consistency_score_percent < 75.0:
                     log.info(
                         f"⚠️ [Rotasi Ditunda] Kandidat {best_new_opp.base_asset} konsistensinya kurang "
-                        f"({best_new_opp.consistency_score_percent:.0f}% < 75%). Menunggu koin lebih stabil."
+                        f"({best_new_opp.consistency_score_percent:.1f}% < 75%). Menunggu koin lebih stabil."
                     )
                     continue
 

@@ -181,3 +181,25 @@ async def test_gemini_brain_uses_120day_stats():
         mock_call.return_value = "PILIH: SOLIDCOIN karena performa 120 hari (4 bulan) tanpa flip dan likuiditas di atas $100k."
         chosen = await brain.select_optimal_taker_agi([opp], capital_usdt=100.0)
         assert chosen.base_asset == "SOLIDCOIN"
+
+def test_120day_consistency_exact_match():
+    """Memastikan konsistensi ditarik dari seluruh horizon 120 hari / 4 bulan secara presisi (contoh: 2 flip dari 720 siklus = 99.7%)."""
+    from analytics.funding_history_analyzer import funding_history_analyzer
+
+    # 720 siklus (120 hari @ 4h interval): 2 siklus negatif, 718 siklus positif
+    rates = [0.0005] * 350 + [-0.0001] + [0.0005] * 200 + [-0.0002] + [0.0005] * 168
+    records = [{"funding_rate": r} for r in rates]
+
+    stats = funding_history_analyzer.analyze_history_deep(
+        symbol="PONKE/USDT:USDT",
+        records=records,
+        spot_taker_fee_pct=0.10,
+        perp_taker_fee_pct=0.06,
+        funding_interval_hours=4,
+        basis_spread_percent=0.03
+    )
+
+    assert stats.negative_flip_count == 2
+    assert stats.positive_consistency_pct == 99.7
+    assert stats.one_twenty_day_flip_count == 2
+

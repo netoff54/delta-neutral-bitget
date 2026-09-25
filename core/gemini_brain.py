@@ -381,7 +381,7 @@ class GeminiBrain:
             candidates_summary.append(
                 f"- {o.base_asset}: Rate {o.current_funding_rate*100:.4f}%/{o.funding_interval_hours}h | "
                 f"Net APY: {o.net_apy_percent:.1f}% | Prediksi Next: {o.predicted_next_funding_rate*100:.4f}% | "
-                f"Konsistensi: {o.consistency_score_percent:.0f}% | Tren: {o.funding_trend} | "
+                f"Konsistensi 120D: {o.consistency_score_percent:.1f}% | Tren: {o.funding_trend} | "
                 f"Vol Perp: ${o.perp_volume_24h/1e6:.1f}M"
                 f"{h120d_info}{rep_str}"
             )
@@ -504,7 +504,7 @@ class GeminiBrain:
             f"- Status Tenggat 1 Bulan: {'LEWAT 1 BULAN (Syarat Minimal Surplus 1%)' if days_held >= 30.0 else 'DALAM 1 BULAN (Target Surplus 5%)'}\n\n"
             f"Kandidat Baru: {candidate_opp.base_asset}\n"
             f"- Net APY: {candidate_opp.net_apy_percent:.1f}% (Prediksi Rate: {candidate_opp.predicted_next_funding_rate*100:+.4f}%/{candidate_opp.funding_interval_hours}h)\n"
-            f"- Konsistensi Rate: {candidate_opp.consistency_score_percent:.0f}% | Tren: {candidate_opp.funding_trend}\n"
+            f"- Konsistensi 120D: {candidate_opp.consistency_score_percent:.1f}% | Tren: {candidate_opp.funding_trend}\n"
             f"- Estimasi BEP Baru: {candidate_opp.break_even_hours:.1f} jam\n\n"
             f"Aturan Rotasi:\n"
             f"1. Wajib BEP telah menutup 100% dari 4 biaya (Spot Beli + Jual, Futures Buka + Tutup).\n"
