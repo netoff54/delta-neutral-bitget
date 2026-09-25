@@ -182,6 +182,12 @@ class PositionManager:
 
                 existing_pos = self.get_position_by_base(base)
 
+                raw_mmr = float(p.get("marginRatio") or p.get("info", {}).get("marginRatio") or 0.0)
+                raw_liq = float(p.get("liquidationPrice") or p.get("info", {}).get("liquidationPrice") or 0.0)
+                raw_roe = p.get("percentage")
+                if raw_roe is None:
+                    raw_roe = p.get("info", {}).get("unrealizedPLR")
+
                 if existing_pos:
                     # Update data kuantitas jika terjadi perubahan
                     existing_pos.perp_leg.amount = contracts
@@ -189,9 +195,15 @@ class PositionManager:
                         existing_pos.spot_leg.amount = spot_qty
                     existing_pos.net_delta = round(existing_pos.spot_leg.amount - existing_pos.perp_leg.amount, 6)
                     existing_pos.leverage = leverage
+                    if raw_mmr > 0:
+                        existing_pos.current_margin_ratio = round(raw_mmr, 4)
+                    if raw_liq > 0:
+                        existing_pos.liquidation_price = round(raw_liq, 4)
+                    if raw_roe is not None:
+                        existing_pos.current_roe_percent = round(float(raw_roe), 2)
                     await client.update_position_live_pnl(existing_pos)
                     self.update_position(existing_pos)
-                    log.info(f"[PositionManager] Posisi {base} disinkronkan dari exchange (Net Delta: {existing_pos.net_delta}).")
+                    log.info(f"[PositionManager] Posisi {base} disinkronkan dari exchange (Net Delta: {existing_pos.net_delta} | ROE: {existing_pos.current_roe_percent:+.2f}% | MMR: {existing_pos.current_margin_ratio:.1%}).")
                 else:
                     # Posisi baru terdeteksi dari exchange (misal setelah redeploy Render / restart)
                     interval_hours = 8
@@ -237,6 +249,9 @@ class PositionManager:
                         funding_interval_hours=interval_hours,
                         entry_time=datetime.now(timezone.utc),
                         net_delta=round(spot_amount - contracts, 6),
+                        current_margin_ratio=round(raw_mmr, 4) if raw_mmr > 0 else 0.0,
+                        current_roe_percent=round(float(raw_roe), 2) if raw_roe is not None else 0.0,
+                        liquidation_price=round(raw_liq, 4) if raw_liq > 0 else None,
                         status="OPEN"
                     )
 
@@ -245,6 +260,7 @@ class PositionManager:
                     log.info(
                         f"🛡️ [PositionManager] Berhasil merekonsiliasi posisi {base} langsung dari Bitget! "
                         f"Spot: {spot_amount} {base} | Perp Short: {contracts} {base} | "
+                        f"ROE: {new_pos.current_roe_percent:+.2f}% | MMR: {new_pos.current_margin_ratio:.1%} | "
                         f"Unrealized PnL: ${new_pos.unrealized_pnl_usdt:+.4f}"
                     )
 
