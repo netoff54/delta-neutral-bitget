@@ -362,12 +362,13 @@ class GeminiBrain:
 
         candidates_summary = []
         for o in top_candidates:
-            h30d_info = ""
-            stats = o.historical_30d_stats or o.historical_7d_stats
+            h60d_info = ""
+            stats = o.historical_60d_stats or o.historical_30d_stats or o.historical_7d_stats
             if stats:
-                h30d_info = (
-                    f" | 30D Yield: {stats.thirty_day_cumulative_yield_pct:+.2f}% (30D APY: {stats.thirty_day_apy_pct:.1f}%) | "
-                    f"30D Flips: {stats.thirty_day_flip_count}x | 7D Yield: {stats.seven_day_cumulative_yield_pct:+.2f}% | "
+                h60d_info = (
+                    f" | 60D Yield: {stats.sixty_day_cumulative_yield_pct:+.2f}% (60D APY: {stats.sixty_day_apy_pct:.1f}%) | "
+                    f"60D Flips: {stats.sixty_day_flip_count}x | 30D Yield: {stats.thirty_day_cumulative_yield_pct:+.2f}% | "
+                    f"7D Yield: {stats.seven_day_cumulative_yield_pct:+.2f}% | "
                     f"Taker Impas: {stats.taker_fee_recovery_hours:.1f}h | Skor Historis: {stats.historical_quality_score:.1f}"
                 )
             
@@ -382,22 +383,22 @@ class GeminiBrain:
                 f"Net APY: {o.net_apy_percent:.1f}% | Prediksi Next: {o.predicted_next_funding_rate*100:.4f}% | "
                 f"Konsistensi: {o.consistency_score_percent:.0f}% | Tren: {o.funding_trend} | "
                 f"Vol Perp: ${o.perp_volume_24h/1e6:.1f}M"
-                f"{h30d_info}{rep_str}"
+                f"{h60d_info}{rep_str}"
             )
 
         prompt = (
             f"Anda adalah Chief Investment Officer (CIO) Delta-Neutral Quantitative Hedge Fund Bitget.\n\n"
             f"{knowledge_context}\n\n"
             f"Modal Tersedia: ${capital_usdt:.2f} USDT (Leverage {settings.LEVERAGE}x)\n"
-            f"Kandidat Pasar Teratas (Dilengkapi Analisis Data Asli Bitget 30 Hari & Biaya Taker):\n"
+            f"Kandidat Pasar Teratas (Dilengkapi Analisis Data Asli Bitget 60 Hari (2 Bulan) & Biaya Taker):\n"
             + "\n".join(candidates_summary) + "\n\n"
             f"Prinsip Keputusan Delta-Neutral Profesional:\n"
-            f"1. Utamakan koin dengan 30-Day Cumulative Yield positif tinggi dan Zero/Minimal Flip (<= 1x rate negatif dalam 30 hari).\n"
+            f"1. Utamakan koin dengan 60-Day (2 Bulan) Cumulative Yield positif tinggi dan Zero/Minimal Flip (<= 2x rate negatif dalam 60 hari).\n"
             f"2. Perhatikan interval waktu pembayaran funding fee (1 jam, 4 jam, atau 8 jam). Koin dengan interval 1h atau 4h memberikan frekuensi panen dividen lebih sering per hari (24x/hari untuk 1h, 6x/hari untuk 4h) sehingga mempercepat tercapainya impas biaya taker.\n"
             f"3. Pastikan biaya taker (spot + perp) cepat terbayar dari dividen funding (Taker Impas < 48 jam).\n"
             f"4. Hindari koin dengan tren Decay tajam atau riwayat reputasi masa lalu yang buruk.\n\n"
             f"Tugas: Tentukan SATU koin terbaik yang paling konsisten positif, aman dari risiko flip, dan berdaya hasil tinggi.\n"
-            f"Format jawaban: 'PILIH: [KOIN]' diikuti alasan 1 kalimat berbasis data historis 30 hari & biaya taker."
+            f"Format jawaban: 'PILIH: [KOIN]' diikuti alasan 1 kalimat berbasis data historis 60 hari & biaya taker."
         )
 
         ai_response = await self.call_gemini(prompt)

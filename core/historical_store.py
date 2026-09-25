@@ -22,7 +22,7 @@ class HistoricalStore:
     def record_funding_rates(self, symbol: str, history: List[Dict[str, Any]], interval_hours: int = 8) -> int:
         return self.db.record_funding_rates(symbol, history, interval_hours)
 
-    def get_funding_history(self, symbol: str, days: int = 30) -> List[Dict[str, Any]]:
+    def get_funding_history(self, symbol: str, days: int = 60) -> List[Dict[str, Any]]:
         return self.db.get_funding_history(symbol, days)
 
     def record_taker_snapshot(self, snapshot: TakerSnapshot):
@@ -62,7 +62,7 @@ class HistoricalStore:
     def get_all_pair_reputations(self) -> Dict[str, float]:
         return self.db.get_all_pair_reputations()
 
-    def prune_older_than_days(self, days: int = 30) -> Dict[str, int]:
+    def prune_older_than_days(self, days: int = 60) -> Dict[str, int]:
         return self.db.prune_older_than_days(days)
 
 historical_store = HistoricalStore()

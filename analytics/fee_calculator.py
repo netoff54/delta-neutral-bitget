@@ -107,8 +107,8 @@ class FeeCalculator:
         break_even_cycles = math.ceil(effective_cost / funding_rate)
         break_even_hours = break_even_cycles * funding_interval_hours
 
-        # Net APY dihitung dengan asumsi horizon holding 30 hari
-        assumed_holding_days = 30
+        # Net APY dihitung dengan asumsi horizon holding 60 hari (2 bulan)
+        assumed_holding_days = getattr(settings, "HISTORICAL_ANALYSIS_DAYS", 60) or 60
         total_cycles_in_holding = assumed_holding_days * cycles_per_day
         gross_return_in_holding = funding_rate * total_cycles_in_holding
         net_return_in_holding = gross_return_in_holding - fee_pct

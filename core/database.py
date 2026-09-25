@@ -272,6 +272,34 @@ class UnifiedDatabase:
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_comb_time ON combined_balance_history(timestamp_utc)")
 
+            # Safe Schema Migrations (PostgreSQL & SQLite) agar kompatibel dengan database yang sudah ada
+            if self.is_postgres:
+                migration_sqls = [
+                    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS cumulative_funding_usdt REAL DEFAULT 0.0",
+                    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS cumulative_funding_received REAL DEFAULT 0.0",
+                    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS is_bep_reached INTEGER DEFAULT 0",
+                    "ALTER TABLE funding_harvests ADD COLUMN IF NOT EXISTS timestamp_utc TEXT",
+                    "ALTER TABLE funding_harvests ADD COLUMN IF NOT EXISTS timestamp TEXT",
+                    "ALTER TABLE potential_taker_snapshots ADD COLUMN IF NOT EXISTS timestamp_utc TEXT",
+                    "ALTER TABLE potential_taker_snapshots ADD COLUMN IF NOT EXISTS timestamp TEXT"
+                ]
+                for m_sql in migration_sqls:
+                    try:
+                        cursor.execute(m_sql)
+                    except Exception as me:
+                        log.debug(f"[Database Migration PG] {me}")
+            else:
+                migration_sqls = [
+                    "ALTER TABLE positions ADD COLUMN cumulative_funding_usdt REAL DEFAULT 0.0",
+                    "ALTER TABLE positions ADD COLUMN is_bep_reached INTEGER DEFAULT 0",
+                    "ALTER TABLE funding_harvests ADD COLUMN timestamp_utc TEXT"
+                ]
+                for m_sql in migration_sqls:
+                    try:
+                        cursor.execute(m_sql)
+                    except Exception:
+                        pass
+
     # =========================================================================
     # PILAR 1: POSITIONS (LIFECYCLE POSISI)
     # =========================================================================
@@ -518,8 +546,8 @@ class UnifiedDatabase:
 
         return len(records)
 
-    def get_funding_history(self, symbol: str, days: int = 30) -> List[Dict[str, Any]]:
-        """Mengambil riwayat funding rate dalam kurun waktu N hari terakhir."""
+    def get_funding_history(self, symbol: str, days: int = 60) -> List[Dict[str, Any]]:
+        """Mengambil riwayat funding rate dalam kurun waktu N hari terakhir (default 60 hari / 2 bulan)."""
         cutoff_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
         sql = """
             SELECT symbol, timestamp_ms, datetime_utc, funding_rate, funding_interval_hours
@@ -818,8 +846,8 @@ class UnifiedDatabase:
             "stability_rating": "HIGHLY_STABLE" if abs(growth_pct) < 15.0 else "MODERATE"
         }
 
-    def prune_older_than_days(self, days: int = 30) -> Dict[str, int]:
-        """Pembersihan berkala data historis non-kritis (funding rate mentah)."""
+    def prune_older_than_days(self, days: int = 60) -> Dict[str, int]:
+        """Pembersihan berkala data historis non-kritis (funding rate mentah, default 60 hari / 2 bulan)."""
         cutoff_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
         cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
@@ -839,7 +867,7 @@ class UnifiedDatabase:
         }
 
     # =========================================================================
-    # PILAR 9: PNL MULTI-TIMEFRAME ANALYTICS (1D / 1W / 1M / 1Y)
+    # PILAR 9: PNL MULTI-TIMEFRAME ANALYTICS (1D / 1W / 1M / 2M / 1Y)
     # =========================================================================
     def get_pnl_for_timeframe(self, days: int) -> Dict[str, Any]:
         """
@@ -847,7 +875,7 @@ class UnifiedDatabase:
         Membandingkan saldo gabungan awal vs saldo saat ini untuk menghitung pertumbuhan nyata.
 
         Args:
-            days: Jumlah hari ke belakang (1=1 hari, 7=1 minggu, 30=1 bulan, 365=1 tahun)
+            days: Jumlah hari ke belakang (1=1 hari, 7=1 minggu, 30=1 bulan, 60=2 bulan, 365=1 tahun)
 
         Returns:
             Dict dengan start_equity, current_equity, pnl_usdt, pnl_pct, funding_harvested,
@@ -923,11 +951,11 @@ class UnifiedDatabase:
 
     def get_all_pnl_timeframes(self) -> Dict[str, Any]:
         """
-        Mengambil PnL untuk semua timeframe sekaligus: 1 Hari, 1 Minggu, 1 Bulan, 1 Tahun.
+        Mengambil PnL untuk semua timeframe sekaligus: 1 Hari, 1 Minggu, 1 Bulan, 2 Bulan, 1 Tahun.
         Menggunakan data REAL yang tersimpan dari Bitget API.
         """
         results = {}
-        for days in [1, 7, 30, 365]:
+        for days in [1, 7, 30, 60, 365]:
             label = self._days_to_label(days)
             results[label] = self.get_pnl_for_timeframe(days)
 
@@ -944,12 +972,12 @@ class UnifiedDatabase:
 
     def _days_to_label(self, days: int) -> str:
         """Konversi jumlah hari ke label yang mudah dibaca."""
-        mapping = {1: "1D", 7: "1W", 30: "1M", 365: "1Y"}
+        mapping = {1: "1D", 7: "1W", 30: "1M", 60: "2M", 365: "1Y"}
         return mapping.get(days, f"{days}D")
 
-    def get_pnl_equity_curve(self, days: int = 30) -> List[Dict[str, Any]]:
+    def get_pnl_equity_curve(self, days: int = 60) -> List[Dict[str, Any]]:
         """
-        Mengambil kurva ekuitas untuk periode tertentu (equity curve).
+        Mengambil kurva ekuitas untuk periode tertentu (equity curve, default 60 hari / 2 bulan).
         Berguna untuk visualisasi pertumbuhan portofolio.
         """
         cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()

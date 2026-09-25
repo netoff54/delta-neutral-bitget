@@ -41,7 +41,8 @@ class Opportunity(BaseModel):
     funding_trend: str = Field(default="STABLE", description="'UP', 'DOWN', 'STABLE'")
     composite_performance_score: float = Field(default=0.0, description="Skor ranking komposit berbasis data")
 
-    # 30-Day & 7-Day In-Depth Historical Telemetry & Taker Quality
+    # 60-Day (2 Bulan), 30-Day, & 7-Day In-Depth Historical Telemetry & Taker Quality
+    historical_60d_stats: Optional["HistoricalFundingStats"] = None
     historical_30d_stats: Optional["HistoricalFundingStats"] = None
     historical_7d_stats: Optional["HistoricalFundingStats"] = None
 
@@ -57,7 +58,12 @@ class Opportunity(BaseModel):
         return float(self.spot_volume_24h + self.perp_volume_24h)
 
 class HistoricalFundingStats(BaseModel):
-    # 30-Day Metrics
+    # 60-Day (2 Bulan) Deep Horizon Metrics
+    sixty_day_cumulative_yield_pct: float = Field(default=0.0, description="Total akumulasi yield funding dalam 60 hari (2 bulan) (%)")
+    sixty_day_apy_pct: float = Field(default=0.0, description="Annualized APY berdasarkan 60 hari (%)")
+    sixty_day_flip_count: int = Field(default=0, description="Berapa kali rate <= 0% dalam 60 hari")
+
+    # 30-Day Metrics (Sub-window)
     thirty_day_cumulative_yield_pct: float = Field(default=0.0, description="Total akumulasi yield funding dalam 30 hari (%)")
     thirty_day_apy_pct: float = Field(default=0.0, description="Annualized APY berdasarkan 30 hari (%)")
     thirty_day_flip_count: int = Field(default=0, description="Berapa kali rate <= 0% dalam 30 hari")
@@ -68,7 +74,7 @@ class HistoricalFundingStats(BaseModel):
     
     # Overall Consistency & Risk
     positive_consistency_pct: float = Field(default=100.0, description="Persentase siklus positif (%)")
-    negative_flip_count: int = Field(default=0, description="Berapa kali rate <= 0%")
+    negative_flip_count: int = Field(default=0, description="Berapa kali rate <= 0% dalam horizon analisis")
     rate_std_dev: float = Field(default=0.0, description="Standar deviasi / volatilitas rate")
     decay_trend: str = Field(default="STABLE", description="'ACCELERATING', 'DECAYING', 'STABLE'")
     taker_fee_recovery_cycles: int = Field(default=1, description="Estimasi siklus rata-rata untuk menutup biaya taker")
