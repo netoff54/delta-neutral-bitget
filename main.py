@@ -179,7 +179,7 @@ def display_pnl_timeframes():
         table.add_column("Avg/Hari", style="cyan", justify="right", no_wrap=True)
         table.add_column("Annualized", style="bold magenta", justify="right", no_wrap=True)
 
-        for label in ["1D", "1W", "1M", "1Y"]:
+        for label in ["1D", "1W", "1M", "2M", "4M", "1Y"]:
             data = pnl_data.get(label, {})
             if not data:
                 continue
@@ -310,16 +310,16 @@ def display_active_positions():
         expand=False
     )
 
-    table.add_column("Koin", style="bold yellow", justify="left", no_wrap=True)
-    table.add_column("Ukuran Posisi", style="white", justify="right", no_wrap=True)
-    table.add_column("Spot (Beli/Kini)", style="green", justify="right", no_wrap=True)
-    table.add_column("Perp (Jual/Kini)", style="magenta", justify="right", no_wrap=True)
-    table.add_column("Funding Panen", style="bold green", justify="right", no_wrap=True)
-    table.add_column("Unrealized PnL", style="white", justify="right", no_wrap=True)
-    table.add_column("Net PnL", style="bold white", justify="right", no_wrap=True)
-    table.add_column("Status BEP", justify="center", no_wrap=True)
-    table.add_column("Margin Ratio", style="bold red", justify="right", no_wrap=True)
-    table.add_column("Durasi", style="cyan", justify="right", no_wrap=True)
+    table.add_column("Koin", style="bold yellow", justify="left")
+    table.add_column("Nominal", style="white", justify="right")
+    table.add_column("Spot Beli/Kini", style="green", justify="right")
+    table.add_column("Perp Jual/Kini", style="magenta", justify="right")
+    table.add_column("Panen", style="bold green", justify="right")
+    table.add_column("uPnL", style="white", justify="right")
+    table.add_column("Net PnL", style="bold white", justify="right")
+    table.add_column("Status BEP", justify="center")
+    table.add_column("MMR Bitget", style="bold yellow", justify="right")
+    table.add_column("Durasi", style="cyan", justify="right")
 
     from utils.interval_helper import safe_hours_passed
 
@@ -327,16 +327,25 @@ def display_active_positions():
         pnl_color = "green" if pos.net_pnl_usdt >= 0 else "red"
         unreal_color = "green" if pos.unrealized_pnl_usdt >= 0 else "yellow"
         bep_badge = "[bold green]BEP Tercapai[/bold green]" if pos.is_bep_reached else f"[bold yellow]Menuju BEP ({pos.net_pnl_usdt:+.4f})[/bold yellow]"
+        bep_text = "BEP Tercapai" if pos.is_bep_reached else f"Menuju BEP ({pos.net_pnl_usdt:+.4f})"
         holding_h = safe_hours_passed(pos.entry_time) if hasattr(pos, "entry_time") else 0.0
 
-        margin_color = "red" if pos.current_margin_ratio >= 0.85 else ("yellow" if pos.current_margin_ratio >= 0.50 else "green")
-        margin_str = f"[{margin_color}]{pos.current_margin_ratio:.1%} (Max 95%)[/{margin_color}]"
+        margin_color = "red" if pos.current_margin_ratio >= 0.80 else ("yellow" if pos.current_margin_ratio >= 0.50 else "green")
+        margin_str = f"[{margin_color}]{pos.current_margin_ratio:.1%} MMR (Max 90%)[/{margin_color}]"
 
         spot_nominal = getattr(pos.spot_leg, "nominal_usdt", 0.0) or (pos.spot_leg.amount * pos.spot_leg.entry_price)
 
+        # Log kalimat utuh agar di cloud viewer Render tidak pernah terpotong
+        log.info(
+            f"📊 [Posisi Aktif] Koin: {pos.base_asset} | Spot: {pos.spot_leg.amount:.2f} (~${spot_nominal:.2f} USDT @ ${pos.spot_leg.current_price:,.4f}) | "
+            f"Perp Short: {pos.perp_leg.amount:.2f} (@ ${pos.perp_leg.current_price:,.4f}) | Panen Funding: +${pos.cumulative_funding_received:.4f} USDT | "
+            f"uPnL: ${pos.unrealized_pnl_usdt:+.4f} | Net PnL: ${pos.net_pnl_usdt:+.4f} ({bep_text}) | "
+            f"MMR Bitget: {pos.current_margin_ratio:.1%} (Max 90%) | Durasi: {holding_h:.1f} jam"
+        )
+
         table.add_row(
             pos.base_asset,
-            f"{pos.spot_leg.amount:.2f} {pos.base_asset} (~${spot_nominal:.1f})",
+            f"{pos.spot_leg.amount:.2f} (~${spot_nominal:.1f})",
             f"${pos.spot_leg.entry_price:,.4f} / ${pos.spot_leg.current_price:,.4f}",
             f"${pos.perp_leg.entry_price:,.4f} / ${pos.perp_leg.current_price:,.4f}",
             f"+${pos.cumulative_funding_received:.4f}",
@@ -378,6 +387,8 @@ def _run_dedicated_health_server(port: int):
                 "funding_received": p.cumulative_funding_received,
                 "net_delta": p.net_delta,
                 "interval_hours": p.funding_interval_hours,
+                "mmr_percent": round(p.current_margin_ratio * 100.0, 2),
+                "is_bep_reached": p.is_bep_reached
             }
             for p in active_positions
         ]

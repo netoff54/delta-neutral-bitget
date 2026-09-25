@@ -12,7 +12,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 import os
-console_width = int(os.getenv("CONSOLE_WIDTH", "160"))
+console_width = int(os.getenv("CONSOLE_WIDTH", "220"))
 console = Console(width=console_width, force_terminal=True, soft_wrap=True)
 
 def setup_logger(name: str = "delta_neutral", log_file: str = "bot.log") -> logging.Logger:
