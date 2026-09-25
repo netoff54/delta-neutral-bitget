@@ -233,9 +233,9 @@ def display_pnl_timeframes():
         log.debug(f"PnL timeframe display notice: {e}")
 
 def display_opportunities(opportunities, top_n: int = 10):
-    """Menampilkan tabel hasil pemindaian peluang dengan analisis kuantitatif 60 hari (2 bulan) dari Bitget & biaya taker."""
+    """Menampilkan tabel hasil pemindaian peluang dengan analisis kuantitatif 120 hari (4 bulan) dari Bitget & biaya taker."""
     table = Table(
-        title=f"Hasil Analisis Pasar & Prediksi Funding Rate (Top {top_n} Peluang - Bitget 60D / 2 Bulan Data)",
+        title=f"Hasil Analisis Pasar & Prediksi Funding Rate (Top {top_n} Peluang - Bitget 120D / 4 Bulan Data)",
         box=box.ROUNDED,
         header_style="bold magenta",
         expand=False
@@ -246,8 +246,8 @@ def display_opportunities(opportunities, top_n: int = 10):
     table.add_column("Rate/Siklus", style="green", justify="right", no_wrap=True)
     table.add_column("Next Rate", style="bright_green", justify="right", no_wrap=True)
     table.add_column("Konsistensi", style="yellow", justify="right", no_wrap=True)
-    table.add_column("60D APY", style="bold green", justify="right", no_wrap=True)
-    table.add_column("60D Flip", style="bright_white", justify="center", no_wrap=True)
+    table.add_column("120D APY", style="bold green", justify="right", no_wrap=True)
+    table.add_column("120D Flip", style="bright_white", justify="center", no_wrap=True)
     table.add_column("Taker Impas", style="bright_yellow", justify="right", no_wrap=True)
     table.add_column("Net APY", style="bold green", justify="right", no_wrap=True)
     table.add_column("Skor", style="bold cyan", justify="right", no_wrap=True)
@@ -273,9 +273,9 @@ def display_opportunities(opportunities, top_n: int = 10):
             else:
                 status_text = f"[dim red][X] {reason[:18]}[/dim red]"
 
-        stats = opp.historical_60d_stats or opp.historical_30d_stats or opp.historical_7d_stats
-        y60d_str = f"{stats.sixty_day_apy_pct:+.1f}%" if stats and stats.sample_count > 0 else (f"{stats.thirty_day_apy_pct:+.1f}%" if stats else "[dim]-[/dim]")
-        flip_count = getattr(stats, "sixty_day_flip_count", getattr(stats, "thirty_day_flip_count", 0)) if stats else 0
+        stats = opp.historical_120d_stats or opp.historical_60d_stats or opp.historical_30d_stats or opp.historical_7d_stats
+        y120d_str = f"{stats.one_twenty_day_apy_pct:+.1f}%" if stats and stats.sample_count > 0 else (f"{stats.sixty_day_apy_pct:+.1f}%" if stats else "[dim]-[/dim]")
+        flip_count = getattr(stats, "one_twenty_day_flip_count", getattr(stats, "sixty_day_flip_count", getattr(stats, "thirty_day_flip_count", 0))) if stats else 0
         flip_str = f"[green]{flip_count}x[/green]" if stats and flip_count == 0 else (f"[red]{flip_count}x[/red]" if stats else "[dim]-[/dim]")
         taker_be_str = f"{stats.taker_fee_recovery_hours:.1f}h" if stats and stats.taker_fee_recovery_hours < 999 else f"{opp.break_even_hours:.1f}h"
 
@@ -285,7 +285,7 @@ def display_opportunities(opportunities, top_n: int = 10):
             f"{opp.current_funding_rate * 100:.4f}%",
             f"{opp.predicted_next_funding_rate * 100:.4f}%",
             f"{opp.consistency_score_percent:.0f}%",
-            y60d_str,
+            y120d_str,
             flip_str,
             taker_be_str,
             f"{opp.net_apy_percent:.1f}%",
@@ -431,7 +431,7 @@ def _run_dedicated_health_server(port: int):
     async def handle_pnl(request):
         timeframe_param = request.rel_url.query.get("tf", None)
         if timeframe_param:
-            tf_map = {"1d": 1, "1w": 7, "1m": 30, "2m": 60, "1y": 365, "7": 7, "30": 30, "60": 60, "365": 365}
+            tf_map = {"1d": 1, "1w": 7, "1m": 30, "2m": 60, "4m": 120, "1y": 365, "7": 7, "30": 30, "60": 60, "120": 120, "365": 365}
             days = tf_map.get(timeframe_param.lower(), 7)
             pnl_data = db.get_pnl_for_timeframe(days)
             equity_curve = db.get_pnl_equity_curve(days=days)

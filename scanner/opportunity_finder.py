@@ -203,21 +203,21 @@ class OpportunityFinder:
             # Jika tidak ada yang lolos kriteria keras, ambil top 5 untuk dianalisis
             top_candidates = opportunities[:5]
 
-        analysis_days = getattr(settings, "HISTORICAL_ANALYSIS_DAYS", 60) or 60
+        analysis_days = getattr(settings, "HISTORICAL_ANALYSIS_DAYS", 120) or 120
         now_ms = int(datetime.utcnow().timestamp() * 1000)
         since_analysis = now_ms - (analysis_days * 86400 * 1000)
 
         for opp in top_candidates:
             await asyncio.sleep(0.01)  # Yield kendali ke event loop agar responsif
-            # 1. Ambil riwayat dari SQLite/PostgreSQL store 60 hari (2 bulan)
+            # 1. Ambil riwayat dari SQLite/PostgreSQL store 120 hari (4 bulan)
             stored_history = historical_store.get_funding_history(opp.perp_symbol, days=analysis_days)
             
-            # Hitung target siklus 60 hari sesuai interval dinamis (1h = 1440 siklus, 4h = 360 siklus, 8h = 180 siklus)
+            # Hitung target siklus 120 hari sesuai interval dinamis (1h = 2880 siklus, 4h = 720 siklus, 8h = 360 siklus)
             dyn_cycles_per_day = cycles_per_day(opp.funding_interval_hours)
             expected_cycles = int(analysis_days * dyn_cycles_per_day)
-            min_required_cycles = max(15, int(expected_cycles * 0.4))
+            min_required_cycles = max(20, int(expected_cycles * 0.4))
 
-            # Jika data di SQLite belum lengkap (< 40% target siklus), lakukan backfill 60 hari (2 bulan) dari API Bitget
+            # Jika data di SQLite belum lengkap (< 40% target siklus), lakukan backfill 120 hari (4 bulan) dari API Bitget
             if len(stored_history) < min_required_cycles:
                 fetched_history = await self.client.fetch_funding_rate_history(
                     opp.perp_symbol,
@@ -301,7 +301,7 @@ class OpportunityFinder:
             )
             opp.predicted_next_funding_rate = pred_rate
 
-            # 2. Analisis Kuantitatif Historis 60 Hari (2 Bulan) Mendalam dari Data Asli Bitget
+            # 2. Analisis Kuantitatif Historis 120 Hari (4 Bulan) Mendalam dari Data Asli Bitget
             stats_deep = funding_history_analyzer.analyze_history_deep(
                 symbol=opp.perp_symbol,
                 records=stored_history,
@@ -310,6 +310,7 @@ class OpportunityFinder:
                 funding_interval_hours=opp.funding_interval_hours,
                 basis_spread_percent=opp.basis_spread_percent
             )
+            opp.historical_120d_stats = stats_deep
             opp.historical_60d_stats = stats_deep
             opp.historical_30d_stats = stats_deep
             opp.historical_7d_stats = stats_deep
@@ -325,7 +326,7 @@ class OpportunityFinder:
                 funding_interval_hours=opp.funding_interval_hours
             )
 
-            # Integrasikan skor kualitas historis 60 hari (Bobot: 50% jangka pendek + 50% kualitas 60 hari)
+            # Integrasikan skor kualitas historis 120 hari (Bobot: 50% jangka pendek + 50% kualitas 120 hari)
             if stats_deep and stats_deep.historical_quality_score > 0:
                 opp.composite_performance_score = round(
                     (base_comp_score * 0.5) + (stats_deep.historical_quality_score * 0.5),
@@ -342,15 +343,15 @@ class OpportunityFinder:
             elif opp.consistency_score_percent < 70.0:
                 opp.is_eligible = False
                 opp.rejection_reason = f"Konsistensi historis rendah ({opp.consistency_score_percent:.0f}% < 70%)"
-            # Jika dalam 60 hari (2 bulan) koin sering berbalik negatif (> 6 kali flip)
-            elif stats_deep and stats_deep.negative_flip_count > 6:
+            # Jika dalam 120 hari (4 bulan) koin sering berbalik negatif (> 10 kali flip)
+            elif stats_deep and stats_deep.negative_flip_count > 10:
                 opp.is_eligible = False
-                opp.rejection_reason = f"Risiko flip 60 hari tinggi ({stats_deep.negative_flip_count}x rate negatif dalam 2 bulan)"
-            elif stats_deep and stats_deep.sixty_day_cumulative_yield_pct <= 0.0 and stats_deep.sample_count >= 15:
+                opp.rejection_reason = f"Risiko flip 120 hari tinggi ({stats_deep.negative_flip_count}x rate negatif dalam 4 bulan)"
+            elif stats_deep and stats_deep.one_twenty_day_cumulative_yield_pct <= 0.0 and stats_deep.sample_count >= 20:
                 opp.is_eligible = False
-                opp.rejection_reason = f"Total yield 60 hari (2 bulan) negatif ({stats_deep.sixty_day_cumulative_yield_pct:+.2f}%)"
+                opp.rejection_reason = f"Total yield 120 hari (4 bulan) negatif ({stats_deep.one_twenty_day_cumulative_yield_pct:+.2f}%)"
 
-        # Bersihkan data lama > 60 hari secara berkala (Auto-pruning 60 hari / 2 bulan)
+        # Bersihkan data lama > 120 hari secara berkala (Auto-pruning 120 hari / 4 bulan)
         try:
             historical_store.prune_older_than_days(days=analysis_days)
         except Exception:

@@ -41,7 +41,8 @@ class Opportunity(BaseModel):
     funding_trend: str = Field(default="STABLE", description="'UP', 'DOWN', 'STABLE'")
     composite_performance_score: float = Field(default=0.0, description="Skor ranking komposit berbasis data")
 
-    # 60-Day (2 Bulan), 30-Day, & 7-Day In-Depth Historical Telemetry & Taker Quality
+    # 120-Day (4 Bulan), 60-Day, 30-Day, & 7-Day In-Depth Historical Telemetry & Taker Quality
+    historical_120d_stats: Optional["HistoricalFundingStats"] = None
     historical_60d_stats: Optional["HistoricalFundingStats"] = None
     historical_30d_stats: Optional["HistoricalFundingStats"] = None
     historical_7d_stats: Optional["HistoricalFundingStats"] = None
@@ -58,6 +59,11 @@ class Opportunity(BaseModel):
         return float(self.spot_volume_24h + self.perp_volume_24h)
 
 class HistoricalFundingStats(BaseModel):
+    # 120-Day (4 Bulan) Ultra-Deep Horizon Metrics
+    one_twenty_day_cumulative_yield_pct: float = Field(default=0.0, description="Total akumulasi yield funding dalam 120 hari (4 bulan) (%)")
+    one_twenty_day_apy_pct: float = Field(default=0.0, description="Annualized APY berdasarkan 120 hari (4 bulan) (%)")
+    one_twenty_day_flip_count: int = Field(default=0, description="Berapa kali rate <= 0% dalam 120 hari")
+
     # 60-Day (2 Bulan) Deep Horizon Metrics
     sixty_day_cumulative_yield_pct: float = Field(default=0.0, description="Total akumulasi yield funding dalam 60 hari (2 bulan) (%)")
     sixty_day_apy_pct: float = Field(default=0.0, description="Annualized APY berdasarkan 60 hari (%)")

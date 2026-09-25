@@ -32,7 +32,7 @@ class BotSettings(BaseSettings):
     INITIAL_SEED_CAPITAL_USDT: float = Field(default=0.0, description="[DEPRECATED] Tidak lagi digunakan - modal dari saldo REAL Bitget")
     TOTAL_MAX_CAPITAL_USDT: Optional[float] = Field(default=None, description="Batas atas total modal (opsional)")
     LEVERAGE: int = Field(default=1, ge=1, le=2, description="Futures short leverage (Maksimal 1x)")
-    MIN_24H_VOLUME_USDT: float = Field(default=500000.0, description="Minimum 24h volume for liquidity check ($500k)")
+    MIN_24H_VOLUME_USDT: float = Field(default=100000.0, description="Minimum 24h volume for liquidity check ($100k)")
 
     # Fee Structure
     SPOT_TAKER_FEE: float = Field(default=0.001, description="Spot taker fee rate (0.1%)")
@@ -42,7 +42,7 @@ class BotSettings(BaseSettings):
     SLIPPAGE_BUFFER: float = Field(default=0.0005, description="Anticipated slippage buffer (0.05%)")
 
     # Strategy & Predictive Scoring
-    HISTORICAL_ANALYSIS_DAYS: int = Field(default=60, description="Horizon analisis riwayat funding rate (2 bulan / 60 hari untuk keamanan maksimal)")
+    HISTORICAL_ANALYSIS_DAYS: int = Field(default=120, description="Horizon analisis riwayat funding rate (4 bulan / 120 hari untuk keamanan maksimal)")
     MIN_NET_APY_PERCENT: float = Field(default=15.0, description="Minimum acceptable net APY (%)")
     MAX_BREAK_EVEN_HOURS: float = Field(default=72.0, description="Maximum hours allowed to break even")
     MIN_CONSECUTIVE_POSITIVE_FUNDING: int = Field(default=2, description="Consecutive positive funding cycles required")
@@ -93,7 +93,7 @@ class BotSettings(BaseSettings):
     AI_REALTIME_EVALUATION: bool = Field(default=True, description="Evaluasi telemetri pasar real-time setiap siklus 2 menit")
 
     # PnL Multi-Timeframe Analytics
-    PNL_TIMEFRAMES_DAYS: list = Field(default=[1, 7, 30, 60, 365], description="Timeframe PnL dalam hari: [1D, 1W, 1M, 2M, 1Y]")
+    PNL_TIMEFRAMES_DAYS: list = Field(default=[1, 7, 30, 60, 120, 365], description="Timeframe PnL dalam hari: [1D, 1W, 1M, 2M, 4M, 1Y]")
 
     # Database Configuration (SQLite default / PostgreSQL cloud persistence)
     DATABASE_URL: Optional[str] = Field(
