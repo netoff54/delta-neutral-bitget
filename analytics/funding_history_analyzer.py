@@ -149,6 +149,41 @@ class FundingHistoryAnalyzer:
 
         composite_score = round(max(0.0, score_consistency + score_flip + score_apy + score_taker_recovery - vol_penalty - decay_penalty), 1)
 
+        # Deteksi Lonjakan Manipulatif (Spikes): Rate > 3x mean positif atau > 0.15% (0.0015) yang melonjak drastis
+        spike_count = 0
+        if mean_rate > 0 and n >= 3:
+            spike_threshold = max(0.0015, mean_rate * 3.0)
+            for i in range(n):
+                if rates[i] >= spike_threshold:
+                    prev_r = rates[i - 1] if i > 0 else mean_rate
+                    next_r = rates[i + 1] if i < n - 1 else mean_rate
+                    if rates[i] > prev_r * 2.0 or rates[i] > next_r * 2.0:
+                        spike_count += 1
+
+        # Hitung Skor Risiko Manipulasi Kuantitatif (0 - 100)
+        # Faktor 1: Frekuensi Flip Negatif dalam 120 Hari (maks 35 poin)
+        flip_risk = min(35.0, negative_flip_count * 5.0)
+
+        # Faktor 2: Koefisien Variasi / Volatilitas Ekstrem (maks 30 poin)
+        cv = (std_dev / max(0.0001, abs(mean_rate))) if abs(mean_rate) > 0 else 2.0
+        cv_risk = min(30.0, cv * 10.0)
+
+        # Faktor 3: Lonjakan Artifisial / Spikes (maks 25 poin)
+        spike_risk = min(25.0, spike_count * 10.0)
+
+        # Faktor 4: Decay Trap (10 poin jika paruh kedua anjlok)
+        decay_risk = 10.0 if decay_trend == "DECAYING" else 0.0
+
+        manipulation_score = round(min(100.0, max(0.0, flip_risk + cv_risk + spike_risk + decay_risk)), 1)
+
+        # Diagnosis Stabilitas 4 Bulan untuk AGI:
+        if manipulation_score >= 45.0 or negative_flip_count > 4 or spike_count >= 3:
+            stability_diagnosis = "MANIPULATIVE_VOLATILE"
+        elif decay_trend == "DECAYING" and (sixty_day_apy < one_twenty_day_apy * 0.40):
+            stability_diagnosis = "DECAYING_TRAP"
+        else:
+            stability_diagnosis = "STABLE_AUTHENTIC"
+
         return HistoricalFundingStats(
             one_twenty_day_cumulative_yield_pct=cum_yield_pct,
             one_twenty_day_apy_pct=one_twenty_day_apy,
@@ -167,6 +202,9 @@ class FundingHistoryAnalyzer:
             decay_trend=decay_trend,
             taker_fee_recovery_cycles=recovery_cycles,
             taker_fee_recovery_hours=recovery_hours,
+            stability_diagnosis=stability_diagnosis,
+            manipulation_risk_score=manipulation_score,
+            spike_count=spike_count,
             historical_quality_score=composite_score,
             sample_count=n
         )

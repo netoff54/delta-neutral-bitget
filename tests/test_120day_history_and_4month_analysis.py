@@ -203,3 +203,61 @@ def test_120day_consistency_exact_match():
     assert stats.positive_consistency_pct == 99.7
     assert stats.one_twenty_day_flip_count == 2
 
+def test_manipulative_vs_stable_funding_detection():
+    """Memastikan sistem mampu membedakan koin dengan funding manipulatif (spike liar / banyak flip) vs stabil otentik."""
+    from analytics.funding_history_analyzer import funding_history_analyzer
+
+    # 1. Koin Stabil Otentik: 360 siklus konsisten ~0.04% per 8h tanpa spike dan 0 flip
+    stable_rates = [0.0004] * 360
+    stable_stats = funding_history_analyzer.analyze_history_deep(
+        symbol="BTC/USDT:USDT",
+        records=[{"funding_rate": r} for r in stable_rates],
+        funding_interval_hours=8
+    )
+    assert stable_stats.stability_diagnosis == "STABLE_AUTHENTIC"
+    assert stable_stats.manipulation_risk_score < 20.0
+    assert stable_stats.spike_count == 0
+
+    # 2. Koin Manipulatif: Banyak lonjakan liar (spikes 10x) lalu collapse dan beberapa kali flip negatif
+    manip_rates = [0.0001] * 50 + [0.0035] + [0.0001] * 50 + [0.0040] + [-0.0005] * 3 + [0.0001] * 50 + [0.0050] + [-0.0002] * 2 + [0.0001] * 100
+    manip_stats = funding_history_analyzer.analyze_history_deep(
+        symbol="PUMPCOIN/USDT:USDT",
+        records=[{"funding_rate": r} for r in manip_rates],
+        funding_interval_hours=8
+    )
+    assert manip_stats.stability_diagnosis == "MANIPULATIVE_VOLATILE"
+    assert manip_stats.manipulation_risk_score >= 45.0
+    assert manip_stats.spike_count >= 2
+
+@pytest.mark.asyncio
+async def test_rotation_learning_persisted_to_database(temp_db):
+    """Memastikan setiap rotasi delta-neutral menyimpan bunga riil dan analisis kausal AGI ke database."""
+    db_inst, store = temp_db
+
+    # Simpan pengalaman rotasi dengan bunga real dan alasan kausal
+    store.record_agi_experience(
+        event_type="ROTATION_LEARNING",
+        base_asset="ARX",
+        funding_rate=0.0005,
+        harvest_usdt=2.45,
+        net_pnl_usdt=1.85,
+        holding_hours=96.0,
+        was_bep_reached=True,
+        ai_decision="ROTATE_ARX_TO_PONKE",
+        lesson_learned="ARX menghasilkan yield 2.45 USDT dalam 96h karena funding rate positif stabil.",
+        tactical_rule="Prioritaskan koin 1h/4h interval STABLE_AUTHENTIC untuk mempercepat compounding.",
+        pair_reputation_score=0.25,
+        context_snapshot={"rotated_from": "ARX", "rotated_to": "PONKE", "effective_realized_apy": 45.2}
+    )
+
+    # Verifikasi data tersimpan di agi_experience_memory
+    memories = db_inst.get_agentic_memory(limit=10)
+    assert len(memories) >= 1
+    rot_mem = memories[0]
+    assert rot_mem["event_type"] == "ROTATION_LEARNING"
+    assert rot_mem["base_asset"] == "ARX"
+    assert rot_mem["harvest_usdt"] == 2.45
+    assert "ARX menghasilkan yield" in rot_mem["lesson_learned"]
+    assert "Prioritaskan koin" in rot_mem["tactical_rule"]
+
+

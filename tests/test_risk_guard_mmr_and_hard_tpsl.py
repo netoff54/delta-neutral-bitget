@@ -43,7 +43,7 @@ def mock_setup():
     return mock_client, mock_pos_mgr, mock_executor, pos
 
 @pytest.mark.asyncio
-async def test_mmr_exceeds_90_pct_triggers_emergency_close(mock_setup):
+async def test_mmr_exceeds_90_pct_triggers_cancellation(mock_setup):
     mock_client, mock_pos_mgr, mock_executor, pos = mock_setup
 
     mock_client.fetch_tickers_by_type = AsyncMock(side_effect=lambda mtype: (
@@ -62,19 +62,42 @@ async def test_mmr_exceeds_90_pct_triggers_emergency_close(mock_setup):
     await guard.check_positions_health()
 
     assert pos.current_margin_ratio == 0.92
-    mock_executor.close_delta_neutral_position.assert_awaited_once_with(
-        position_id="test_pos_arx",
-        reason="MMR Kritis Bitget (92.0% >= 90%)"
-    )
+    mock_executor.close_delta_neutral_position.assert_awaited_once()
+    args, kwargs = mock_executor.close_delta_neutral_position.call_args
+    assert "BATALKAN_DELTA_NEUTRAL_FUTURES_MINUS_90%" in kwargs.get("reason", "")
 
 @pytest.mark.asyncio
-async def test_hard_take_profit_triggered_with_positive_spread(mock_setup):
+async def test_futures_loss_90_pct_triggers_cancellation(mock_setup):
     mock_client, mock_pos_mgr, mock_executor, pos = mock_setup
 
-    # Positive spread: spot bid $0.21 >= perp ask $0.20
+    mock_client.fetch_tickers_by_type = AsyncMock(side_effect=lambda mtype: (
+        {"ARX/USDT:USDT": {"last": 0.38, "ask": 0.38}} if mtype == "swap"
+        else {"ARX/USDT": {"last": 0.38, "bid": 0.38}}
+    ))
+
+    # Low MMR reported by Bitget, but perp unrealized loss is -18.5 USDT out of 20 USDT margin (minus 92.5%)
+    mock_client.fetch_positions = AsyncMock(return_value=[{
+        "symbol": "ARX/USDT:USDT",
+        "marginRatio": 0.15,
+        "liquidationPrice": 0.45
+    }])
+    pos.perp_leg.unrealized_pnl = -18.50  # -18.50 / 20.0 = -92.5%
+
+    guard = MarginGuard(client=mock_client, pos_mgr=mock_pos_mgr, executor=mock_executor)
+    await guard.check_positions_health()
+
+    mock_executor.close_delta_neutral_position.assert_awaited_once()
+    args, kwargs = mock_executor.close_delta_neutral_position.call_args
+    assert "BATALKAN_DELTA_NEUTRAL_FUTURES_MINUS_90%" in kwargs.get("reason", "")
+
+@pytest.mark.asyncio
+async def test_no_artificial_tp_sl_delta_neutral_continues_holding(mock_setup):
+    mock_client, mock_pos_mgr, mock_executor, pos = mock_setup
+
+    # Positive spread: spot bid $0.20, perp ask $0.20
     mock_client.fetch_tickers_by_type = AsyncMock(side_effect=lambda mtype: (
         {"ARX/USDT:USDT": {"last": 0.20, "ask": 0.20}} if mtype == "swap"
-        else {"ARX/USDT": {"last": 0.21, "bid": 0.21}}
+        else {"ARX/USDT": {"last": 0.20, "bid": 0.20}}
     ))
 
     mock_client.fetch_positions = AsyncMock(return_value=[{
@@ -83,38 +106,20 @@ async def test_hard_take_profit_triggered_with_positive_spread(mock_setup):
         "liquidationPrice": 0.40
     }])
 
-    # Capital = 20 USDT, 5% TP = +1.0 USDT
+    # Case 1: Net PnL is +1.50 USDT (> 5%). Posisi TIDAK boleh ditutup prematurely
+    # karena delta neutral harus terus memanen funding tanpa interupsi artificial TP
     pos.is_bep_reached = True
-    pos.net_pnl_usdt = 1.50 # +1.50 USDT (> 5%)
+    pos.net_pnl_usdt = 1.50
+    pos.perp_leg.unrealized_pnl = -0.50
 
     guard = MarginGuard(client=mock_client, pos_mgr=mock_pos_mgr, executor=mock_executor)
     await guard.check_positions_health()
 
-    mock_executor.close_delta_neutral_position.assert_awaited_once()
-    args, kwargs = mock_executor.close_delta_neutral_position.call_args
-    assert "HARD_TAKE_PROFIT" in kwargs.get("reason", "")
+    mock_executor.close_delta_neutral_position.assert_not_called()
 
-@pytest.mark.asyncio
-async def test_hard_stop_loss_triggered_on_extreme_loss(mock_setup):
-    mock_client, mock_pos_mgr, mock_executor, pos = mock_setup
-
-    mock_client.fetch_tickers_by_type = AsyncMock(side_effect=lambda mtype: (
-        {"ARX/USDT:USDT": {"last": 0.20, "ask": 0.20}} if mtype == "swap"
-        else {"ARX/USDT": {"last": 0.20, "bid": 0.20}}
-    ))
-
-    mock_client.fetch_positions = AsyncMock(return_value=[{
-        "symbol": "ARX/USDT:USDT",
-        "marginRatio": 0.10,
-        "liquidationPrice": 0.40
-    }])
-
-    # Extreme net loss: -1.50 USDT (<= -5% of 20 USDT = -1.0)
-    pos.net_pnl_usdt = -1.50
-
-    guard = MarginGuard(client=mock_client, pos_mgr=mock_pos_mgr, executor=mock_executor)
+    # Case 2: Net PnL fluctuates down to -1.20 USDT (<= -5% of 20 USDT margin).
+    # Namun kaki futures belum minus 90% (hanya -0.50). Posisi TETAP DIPERTAHANKAN (no artificial SL)!
+    pos.net_pnl_usdt = -1.20
     await guard.check_positions_health()
 
-    mock_executor.close_delta_neutral_position.assert_awaited_once()
-    args, kwargs = mock_executor.close_delta_neutral_position.call_args
-    assert "HARD_STOP_LOSS" in kwargs.get("reason", "")
+    mock_executor.close_delta_neutral_position.assert_not_called()

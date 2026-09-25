@@ -118,17 +118,36 @@ class MarginGuard:
                         f"Liq Price: ${pos.liquidation_price:,.4f}"
                     )
 
-                    # 2. Proteksi Darurat Likuidasi: Auto-close jika MMR Bitget mencapai >= 90%
+                    # 2. Proteksi Darurat: BATALKAN DELTA NEUTRAL JIKA FUTURES MINUS >= 90% (MMR >= 90% atau Kerugian Futures >= 90%)
                     auto_close_threshold = getattr(settings, "AUTO_CLOSE_MARGIN_RATIO", 0.90)
-                    if pos.current_margin_ratio >= auto_close_threshold:
+                    futures_max_loss_pct = getattr(settings, "FUTURES_MAX_LOSS_PERCENT", 0.90)
+                    
+                    perp_margin = (getattr(pos.perp_leg, "nominal_usdt", 0.0) or (pos.perp_leg.amount * pos.perp_leg.entry_price)) / max(1, getattr(pos, "leverage", 1))
+                    perp_unrealized_pnl = getattr(pos.perp_leg, "unrealized_pnl", 0.0)
+                    perp_loss_pct = (abs(perp_unrealized_pnl) / perp_margin) if (perp_unrealized_pnl < 0 and perp_margin > 0) else 0.0
+
+                    is_mmr_critical = pos.current_margin_ratio >= auto_close_threshold
+                    is_futures_loss_critical = perp_loss_pct >= futures_max_loss_pct or perp_unrealized_pnl <= (-futures_max_loss_pct * perp_margin)
+
+                    if is_mmr_critical or is_futures_loss_critical:
                         log.critical(
-                            f"🚨 [EMERGENCY DELEVERAGE - MMR >= 90%] Maintenance Margin Ratio (MMR) {pos.base_asset} "
-                            f"di Bitget mencapai {pos.current_margin_ratio:.1%} (>= {auto_close_threshold:.0%}). "
-                            f"Menutup posisi secara instan untuk melindungi modal dari likuidasi!"
+                            f"🚨 [BATALKAN DELTA NEUTRAL - FUTURES MINUS >= 90%] Kaki Futures {pos.base_asset} "
+                            f"minus melebihi batas 90%! MMR Bitget: {pos.current_margin_ratio:.1%} (>= {auto_close_threshold:.0%}), "
+                            f"Perp uPnL: ${perp_unrealized_pnl:+.4f} / Margin ${perp_margin:.2f} ({perp_loss_pct:.1%}). "
+                            f"Membatalkan delta neutral seketika untuk menyelamatkan modal dari likuidasi bursa!"
                         )
+                        cancel_msg = (
+                            f"🚨 *[BATALKAN DELTA NEUTRAL - FUTURES MINUS >= 90%]*\n"
+                            f"Posisi: `{pos.base_asset}`\n"
+                            f"MMR Bitget: `{pos.current_margin_ratio:.1%}` (Batas: {auto_close_threshold:.0%})\n"
+                            f"Futures Loss: `{perp_loss_pct:.1%}` (Batas: {futures_max_loss_pct:.0%})\n"
+                            f"Futures uPnL: `${perp_unrealized_pnl:+.4f} USDT` / Margin `${perp_margin:.2f} USDT`\n"
+                            f"Tindakan: Membatalkan delta neutral dan menutup kedua kaki secara instan!"
+                        )
+                        await notifier.send_message(cancel_msg)
                         await self.executor.close_delta_neutral_position(
                             position_id=pos.position_id,
-                            reason=f"MMR Kritis Bitget ({pos.current_margin_ratio:.1%} >= {auto_close_threshold:.0%})"
+                            reason=f"BATALKAN_DELTA_NEUTRAL_FUTURES_MINUS_90% (MMR: {pos.current_margin_ratio:.1%}, PerpLoss: {perp_loss_pct:.1%})"
                         )
                         continue
 
@@ -141,62 +160,28 @@ class MarginGuard:
                             f"MMR Bitget saat ini: `{pos.current_margin_ratio:.1%}` (Peringatan: {warn_threshold:.0%})\n"
                             f"Harga Saat Ini: `${current_perp_p:,.4f}`\n"
                             f"Harga Likuidasi: `${pos.liquidation_price:,.4f}`\n"
-                            f"Auto-close darurat otomatis aktif jika menyentuh 90%!"
+                            f"Jika minus menyentuh 90%, posisi delta neutral akan dibatalkan otomatis!"
                         )
                         log.warning(warn_msg.replace("*", "").replace("`", ""))
                         await notifier.send_message(warn_msg)
 
-                    # 3. HARD TAKE PROFIT (TP) & HARD STOP LOSS (SL) OTOMATIS (TANPA MENUNGGU AI)
-                    # Memberikan proteksi seketika saat terjadi volatilitas tinggi di Spot / Futures
-                    pos_capital = getattr(pos.spot_leg, "nominal_usdt", 0.0) + getattr(pos.perp_leg, "nominal_usdt", 0.0)
-                    if pos_capital <= 0.0:
-                        pos_capital = (pos.spot_leg.amount * current_spot_p) + (pos.perp_leg.amount * current_perp_p)
-                    pos_half_cap = max(10.0, pos_capital / 2.0)
-
-                    tp_pct = getattr(settings, "HARD_TAKE_PROFIT_PERCENT", 0.05)
-                    sl_pct = getattr(settings, "HARD_STOP_LOSS_PERCENT", 0.05)
-
-                    # Basis spread saat exit (harga jual spot vs harga beli futures)
+                    # 3. MONITOR & PASTIKAN BASIS SPREAD TETAP POSITIF
+                    # Menjamin harga perp tidak berada di bawah spot (perp >= spot)
                     spot_bid = float(spot_t.get("bid") or spot_t.get("last") or current_spot_p)
                     perp_ask = float(perp_t.get("ask") or perp_t.get("last") or current_perp_p)
-                    exit_spread_pct = ((spot_bid - perp_ask) / perp_ask) * 100.0 if perp_ask > 0 else 0.0
+                    basis_spread_pct = ((perp_ask - spot_bid) / spot_bid) * 100.0 if spot_bid > 0 else 0.0
 
-                    # A. Hard Take Profit (TP):
-                    # Terpicu jika BEP tercapai dan profit bersih >= 5% modal posisi
-                    target_tp_usdt = pos_half_cap * tp_pct
-                    if pos.is_bep_reached and pos.net_pnl_usdt >= target_tp_usdt:
-                        # Jamin spread keluar positif (Spot Bid >= Perp Ask) agar profit tidak tergerus
-                        if getattr(settings, "REQUIRE_POSITIVE_SPREAD", True) and exit_spread_pct < -0.15:
-                            log.info(
-                                f"🎯 [TP Standby] Target profit +${pos.net_pnl_usdt:.4f} USDT terpenuhi, namun spread "
-                                f"saat ini {exit_spread_pct:+.2f}%. Menunggu konvergensi spread positif sebelum mengunci profit."
-                            )
-                        else:
-                            log.info(
-                                f"🎯 [HARD TAKE PROFIT DIPICU] Posisi {pos.base_asset} mencapai target TP: "
-                                f"Net PnL +${pos.net_pnl_usdt:.4f} USDT (>= {tp_pct:.0%}). Spread keluar: {exit_spread_pct:+.2f}%. "
-                                f"Mengunci profit secara otomatis!"
-                            )
-                            await self.executor.close_delta_neutral_position(
-                                position_id=pos.position_id,
-                                reason=f"HARD_TAKE_PROFIT (+${pos.net_pnl_usdt:.4f} USDT >= {tp_pct:.0%})"
-                            )
-                            continue
+                    spread_status = "POSITIF (AMAN)" if basis_spread_pct >= 0.0 else "NEGATIF (WASPADA)"
+                    log.info(
+                        f"[Spread Monitor] {pos.base_asset} -> Spot Bid: ${spot_bid:,.4f} | Perp Ask: ${perp_ask:,.4f} | "
+                        f"Basis Spread: {basis_spread_pct:+.3f}% -> Status Spread: {spread_status}"
+                    )
 
-                    # B. Hard Stop Loss (SL) Volatilitas Ekstrem:
-                    # Terpicu seketika jika anomali divergensi ekstrem membuat Net PnL rugi melebihi 5% modal
-                    max_sl_usdt = -(pos_half_cap * sl_pct)
-                    if pos.net_pnl_usdt <= max_sl_usdt:
-                        log.critical(
-                            f"🛑 [HARD STOP LOSS DIPICU] Posisi {pos.base_asset} menyentuh batas kerugian maksimal: "
-                            f"Net PnL ${pos.net_pnl_usdt:.4f} USDT (<= -{sl_pct:.0%}). "
-                            f"Menutup kedua kaki secara instan untuk melindungi modal dari volatilitas liar!"
+                    if basis_spread_pct < -0.50:
+                        log.warning(
+                            f"⚠️ [Spread Warning] Basis spread {pos.base_asset} tertekan negatif ({basis_spread_pct:+.2f}%). "
+                            f"Memantau konvergensi harga agar spread kembali positif."
                         )
-                        await self.executor.close_delta_neutral_position(
-                            position_id=pos.position_id,
-                            reason=f"HARD_STOP_LOSS (Net PnL ${pos.net_pnl_usdt:.4f} <= -{sl_pct:.0%})"
-                        )
-                        continue
                 except Exception as pos_err:
                     log.error(f"[MarginGuard] Kendala periksa posisi {getattr(pos, 'base_asset', 'UNKNOWN')}: {pos_err}")
         except Exception as e:

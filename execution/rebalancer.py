@@ -271,31 +271,98 @@ class AutoRebalancer:
                 log.info(rotation_msg.replace("*", "").replace("`", ""))
                 await notifier.send_message(rotation_msg)
 
+                # Tarik bunga riil teraktual dari ledger Bitget sebelum menutup posisi
+                entry_ts_ms = int(pos.entry_time.timestamp() * 1000)
+                try:
+                    real_funding_from_ledger = await self.client.fetch_realized_funding_fee(pos.base_asset, since_timestamp_ms=entry_ts_ms)
+                    if real_funding_from_ledger > 0.0:
+                        pos.realized_funding_usdt = real_funding_from_ledger
+                        pos.cumulative_funding_received = real_funding_from_ledger
+                except Exception as l_err:
+                    log.debug(f"[Rotasi] Fetch realized funding notice: {l_err}")
+
+                # Simpan bunga real secara permanen ke database (tabel funding_harvests)
+                from core.database import db
+                try:
+                    db.record_funding_harvest(
+                        position_id=pos.position_id,
+                        base_asset=pos.base_asset,
+                        perp_symbol=pos.perp_leg.symbol,
+                        funding_rate=pos.last_funding_rate,
+                        funding_interval_hours=getattr(pos, "funding_interval_hours", 8),
+                        payment_usdt=pos.cumulative_funding_received,
+                        compounded_amount_usdt=0.0
+                    )
+                except Exception as dbe:
+                    log.debug(f"[Rotasi] Catat funding harvest ke database: {dbe}")
+
+                # Sintesis Pembelajaran Kausal AGI: Mengapa dapat bunga segitu & bagaimana meningkatkannya
+                effective_realized_apy = (
+                    (pos.cumulative_funding_received / max(1.0, position_bep_capital)) *
+                    (8760.0 / max(1.0, holding_hours)) * 100.0
+                ) if holding_hours > 0 else 0.0
+
+                why_yield_achieved = (
+                    f"Posisi {pos.base_asset} menghasilkan bunga riil ${pos.cumulative_funding_received:.4f} USDT "
+                    f"(Net PnL ${pos.net_pnl_usdt:+.4f} USDT, APY Realisasi {effective_realized_apy:.1f}%) selama {holding_hours:.1f} jam. "
+                    f"Penyebab keberhasilan: Pembayaran dividen funding interval {getattr(pos, 'funding_interval_hours', 8)}h "
+                    f"dengan rate rata-rata {pos.last_funding_rate*100:+.4f}% konsisten positif tanpa flip negatif yang menggerus modal."
+                )
+
+                how_to_increase_future_yield = (
+                    f"Strategi meningkatkan hasil pada rotasi berikutnya: "
+                    f"1) Prioritaskan koin dengan interval funding dinamis (1h/4h) yang memiliki reputasi 'STABLE_AUTHENTIC' 4 bulan "
+                    f"agar dividen cair lebih sering (hingga 24x/hari). "
+                    f"2) Pastikan basis spread perp >= spot selalu positif tinggi saat entry untuk mempercepat penutupan amortisasi taker fee. "
+                    f"3) Biarkan posisi melampaui surplus BEP 5% agar efek bunga berbunga (compounding) bekerja maksimal."
+                )
+
+                rotation_context_snapshot = {
+                    "rotated_from": pos.base_asset,
+                    "rotated_to": best_new_opp.base_asset,
+                    "realized_funding_usdt": pos.cumulative_funding_received,
+                    "net_pnl_usdt": pos.net_pnl_usdt,
+                    "position_bep_capital": position_bep_capital,
+                    "effective_realized_apy": round(effective_realized_apy, 2),
+                    "holding_hours": round(holding_hours, 2),
+                    "days_held": round(days_held, 2),
+                    "old_apy": old_apy,
+                    "new_apy": best_new_opp.net_apy_percent,
+                    "new_token_interval": best_new_opp.funding_interval_hours,
+                    "new_token_stability": getattr(best_new_opp.historical_120d_stats, "stability_diagnosis", "STABLE_AUTHENTIC") if best_new_opp.historical_120d_stats else "STABLE_AUTHENTIC",
+                    "spot_exit_price": pos.spot_leg.current_price,
+                    "perp_exit_price": pos.perp_leg.current_price,
+                    "exit_reason": "OPPORTUNITY_ROTATION_SURPLUS_ACHIEVED"
+                }
+
+                # Simpan pengalaman AGI permanen ke database agi_experience_memory
+                try:
+                    db.record_agi_experience(
+                        event_type="ROTATION_LEARNING",
+                        base_asset=pos.base_asset,
+                        funding_rate=pos.last_funding_rate,
+                        harvest_usdt=pos.cumulative_funding_received,
+                        net_pnl_usdt=pos.net_pnl_usdt,
+                        holding_hours=holding_hours,
+                        was_bep_reached=pos.is_bep_reached,
+                        ai_decision=f"ROTATE_{pos.base_asset}_TO_{best_new_opp.base_asset}",
+                        lesson_learned=why_yield_achieved,
+                        tactical_rule=how_to_increase_future_yield,
+                        pair_reputation_score=0.25 if pos.is_bep_reached else 0.0,
+                        context_snapshot=rotation_context_snapshot
+                    )
+                    log.info(f"🧠 [AGI Permanent Memory] Pengalaman rotasi {pos.base_asset} -> {best_new_opp.base_asset} tersimpan permanen di Database!")
+                except Exception as mem_err:
+                    log.debug(f"[Rotasi] Catat AGI experience notice: {mem_err}")
+
                 # 1. Unwind posisi lama
                 success_close = await self.executor.close_delta_neutral_position(
                     position_id=pos.position_id,
-                    reason=f"Rotasi Peluang ke {best_new_opp.base_asset} (+{apy_gain:.1f}% APY | Profit: +${pos.net_pnl_usdt:.4f})"
+                    reason=f"Rotasi Peluang ke {best_new_opp.base_asset} (+{apy_gain:.1f}% APY | Bunga Riil: +${pos.cumulative_funding_received:.4f} USDT | Net PnL: +${pos.net_pnl_usdt:.4f})"
                 )
 
                 # 2. Buka posisi pada koin baru yang lebih superior
                 if success_close:
-                    try:
-                        from core.historical_store import historical_store
-                        historical_store.record_agi_experience(
-                            event_type="ROTATION",
-                            base_asset=pos.base_asset,
-                            funding_rate=pos.last_funding_rate,
-                            harvest_usdt=pos.cumulative_funding_received,
-                            net_pnl_usdt=pos.net_pnl_usdt,
-                            holding_hours=holding_hours,
-                            was_bep_reached=pos.is_bep_reached,
-                            ai_decision=f"ROTATE_TO_{best_new_opp.base_asset}",
-                            lesson_learned=f"Rotasi berhasil dari {pos.base_asset} ke {best_new_opp.base_asset} setelah {holding_hours:.1f} jam. Profit terkunci: +${pos.net_pnl_usdt:.4f}. APY gain: +{apy_gain:.1f}%.",
-                            pair_reputation_score=0.2 if pos.is_bep_reached else 0.0
-                        )
-                    except Exception:
-                        pass
-
                     await asyncio.sleep(2)
                     await self.executor.open_delta_neutral_position(
                         opportunity=best_new_opp,

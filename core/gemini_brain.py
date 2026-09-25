@@ -137,6 +137,34 @@ class GeminiBrain:
                 lesson = m.get("lesson_learned", m.get("insight", ""))[:120]
                 context_lines.append(f"{idx}. [{coin}] Rate: {rate:+.4f}%, Profit: +${profit:.4f}, Net PnL: ${pnl:+.4f} | Catatan: {lesson}")
 
+        # Memori Pembelajaran Rotasi & Analisis Bunga Riil dari Database
+        rotation_memories = [m for m in self.memory if m.get("event_type") == "ROTATION_LEARNING"][-3:]
+        if not rotation_memories:
+            try:
+                from core.database import db
+                db_rot = [r for r in db.get_agentic_memory(limit=30) if r.get("event_type") == "ROTATION_LEARNING"][:3]
+                if db_rot:
+                    rotation_memories = [
+                        {
+                            "base_asset": r.get("base_asset"),
+                            "harvest_profit_usdt": r.get("harvest_usdt"),
+                            "lesson_learned": r.get("lesson_learned"),
+                            "tactical_rule": r.get("tactical_rule")
+                        }
+                        for r in db_rot
+                    ]
+            except Exception:
+                pass
+
+        if rotation_memories:
+            context_lines.append("\nPengalaman Nyata Rotasi Masa Lalu & Sebab-Akibat Perolehan Bunga:")
+            for idx, rm in enumerate(rotation_memories, 1):
+                coin = rm.get("base_asset", "?")
+                bunga = rm.get("harvest_profit_usdt", 0.0)
+                sebab = rm.get("lesson_learned", "")
+                saran = rm.get("tactical_rule", "")
+                context_lines.append(f"{idx}. [{coin}] Bunga Riil: +${bunga:.4f} USDT | Analisis Sebab: {sebab[:120]} | Cara Meningkatkan: {saran[:120]}")
+
         # Tambahkan Analisis PnL Multi-Timeframe (1D, 1W, 1M, 1Y) Langsung dari Database
         try:
             from core.database import db
@@ -365,8 +393,12 @@ class GeminiBrain:
             h120d_info = ""
             stats = o.historical_120d_stats or o.historical_60d_stats or o.historical_30d_stats or o.historical_7d_stats
             if stats:
+                diag = getattr(stats, "stability_diagnosis", "STABLE_AUTHENTIC")
+                risk = getattr(stats, "manipulation_risk_score", 0.0)
+                spikes = getattr(stats, "spike_count", 0)
                 h120d_info = (
-                    f" | 120D Yield: {stats.one_twenty_day_cumulative_yield_pct:+.2f}% (120D APY: {stats.one_twenty_day_apy_pct:.1f}%) | "
+                    f" | 120D Stabilitas: {diag} (Risiko Manipulasi: {risk:.0f}/100, Spikes: {spikes}x) | "
+                    f"120D Yield: {stats.one_twenty_day_cumulative_yield_pct:+.2f}% (120D APY: {stats.one_twenty_day_apy_pct:.1f}%) | "
                     f"120D Flips: {stats.one_twenty_day_flip_count}x | 60D Yield: {stats.sixty_day_cumulative_yield_pct:+.2f}% | "
                     f"30D Yield: {stats.thirty_day_cumulative_yield_pct:+.2f}% | 7D Yield: {stats.seven_day_cumulative_yield_pct:+.2f}% | "
                     f"Taker Impas: {stats.taker_fee_recovery_hours:.1f}h | Skor Historis: {stats.historical_quality_score:.1f}"
@@ -390,14 +422,16 @@ class GeminiBrain:
             f"Anda adalah Chief Investment Officer (CIO) Delta-Neutral Quantitative Hedge Fund Bitget.\n\n"
             f"{knowledge_context}\n\n"
             f"Modal Tersedia: ${capital_usdt:.2f} USDT (Leverage {settings.LEVERAGE}x)\n"
-            f"Kandidat Pasar Teratas (Dilengkapi Analisis Data Asli Bitget 120 Hari (4 Bulan) & Biaya Taker):\n"
+            f"Kandidat Pasar Teratas (Dilengkapi Analisis Data Asli Bitget 120 Hari (4 Bulan), Skor Stabilitas & Biaya Taker):\n"
             + "\n".join(candidates_summary) + "\n\n"
             f"Prinsip Keputusan Delta-Neutral Profesional:\n"
-            f"1. Utamakan koin dengan 120-Day (4 Bulan) Cumulative Yield positif tinggi dan Zero/Minimal Flip (<= 3x rate negatif dalam 120 hari).\n"
-            f"2. Perhatikan interval waktu pembayaran funding fee (1 jam, 4 jam, atau 8 jam). Koin dengan interval 1h atau 4h memberikan frekuensi panen dividen lebih sering per hari (24x/hari untuk 1h, 6x/hari untuk 4h) sehingga mempercepat tercapainya impas biaya taker.\n"
+            f"1. DETEKSI FUNDING 4 BULAN (MANIPULATIF VS STABIL):\n"
+            f"   - Koin dengan diagnosis 'MANIPULATIVE_VOLATILE' atau 'DECAYING_TRAP' (banyak lonjakan spike buatan, sering flip negatif > 3x dalam 120 hari, atau lonjakan sesaat pump-and-dump) HARUS DITOLAK karena berbahaya menyedot modal atau menjebak posisi.\n"
+            f"   - HANYA PILIH koin dengan status 'STABLE_AUTHENTIC' (konsistensi 120 hari >= 95%, deviasi rendah, dividen stabil tanpa manipulasi market maker).\n"
+            f"2. Frekuensi Pembayaran Funding: Koin dengan interval 1h atau 4h yang otentik stabil sangat diprioritaskan karena frekuensi panen dividen lebih sering per hari (24x/hari untuk 1h, 6x/hari untuk 4h) sehingga mempercepat tercapainya impas biaya taker.\n"
             f"3. Pastikan biaya taker (spot + perp) cepat terbayar dari dividen funding (Taker Impas < 48 jam).\n"
-            f"4. Hindari koin dengan tren Decay tajam atau riwayat reputasi masa lalu yang buruk.\n\n"
-            f"Tugas: Tentukan SATU koin terbaik yang paling konsisten positif, aman dari risiko flip, dan berdaya hasil tinggi.\n"
+            f"4. Basis Spread Positif: Wajib memastikan spread perp >= spot.\n\n"
+            f"Tugas: Tentukan SATU koin terbaik yang OTENTIK STABIL (bukan manipulatif), konsisten positif 4 bulan, dan berdaya hasil tinggi.\n"
             f"Format jawaban: 'PILIH: [KOIN]' diikuti alasan 1 kalimat berbasis data historis 120 hari & biaya taker."
         )
 
@@ -408,8 +442,12 @@ class GeminiBrain:
                     log.info(f"🎯 [Gemini AGI Taker Selection]: Memilih {o.base_asset} -> {ai_response}")
                     return o
 
-        # Fallback ke ranking kuantitatif tertinggi jika API tidak menyebutkan koin spesifik
-        return top_candidates[0]
+        # Fallback ke koin dengan skor kuantitatif tertinggi yang STABLE_AUTHENTIC
+        stable_candidates = [
+            o for o in top_candidates
+            if getattr(getattr(o, "historical_120d_stats", None), "stability_diagnosis", "STABLE_AUTHENTIC") == "STABLE_AUTHENTIC"
+        ]
+        return stable_candidates[0] if stable_candidates else top_candidates[0]
 
     def generate_funding_projection(
         self,
@@ -493,6 +531,18 @@ class GeminiBrain:
         bep_capital = spot_capital + perp_capital
         surplus_pct = (current_pos.net_pnl_usdt / bep_capital * 100.0) if bep_capital > 0 else 0.0
 
+        cand_stats = candidate_opp.historical_120d_stats or candidate_opp.historical_60d_stats
+        cand_diag = getattr(cand_stats, "stability_diagnosis", "STABLE_AUTHENTIC") if cand_stats else "STABLE_AUTHENTIC"
+        cand_risk = getattr(cand_stats, "manipulation_risk_score", 0.0) if cand_stats else 0.0
+
+        # Zero-tolerance untuk koin manipulatif saat rotasi
+        if cand_diag in ("MANIPULATIVE_VOLATILE", "DECAYING_TRAP") or cand_risk >= 50.0:
+            log.warning(
+                f"✋ [Rotasi Ditolak AGI] Kandidat {candidate_opp.base_asset} terdeteksi manipulatif/tidak stabil "
+                f"({cand_diag}, Skor Risiko Manipulasi: {cand_risk:.0f}/100). Menolak rotasi demi keamanan modal!"
+            )
+            return False
+
         prompt = (
             f"Anda adalah Chief Investment Officer (CIO) Delta-Neutral Quantitative AGI.\n\n"
             f"{knowledge_context}\n\n"
@@ -504,12 +554,13 @@ class GeminiBrain:
             f"- Status Tenggat 1 Bulan: {'LEWAT 1 BULAN (Syarat Minimal Surplus 1%)' if days_held >= 30.0 else 'DALAM 1 BULAN (Target Surplus 5%)'}\n\n"
             f"Kandidat Baru: {candidate_opp.base_asset}\n"
             f"- Net APY: {candidate_opp.net_apy_percent:.1f}% (Prediksi Rate: {candidate_opp.predicted_next_funding_rate*100:+.4f}%/{candidate_opp.funding_interval_hours}h)\n"
+            f"- 4-Month Stabilitas Bitget: {cand_diag} (Skor Risiko: {cand_risk:.0f}/100)\n"
             f"- Konsistensi 120D: {candidate_opp.consistency_score_percent:.1f}% | Tren: {candidate_opp.funding_trend}\n"
             f"- Estimasi BEP Baru: {candidate_opp.break_even_hours:.1f} jam\n\n"
             f"Aturan Rotasi:\n"
             f"1. Wajib BEP telah menutup 100% dari 4 biaya (Spot Beli + Jual, Futures Buka + Tutup).\n"
             f"2. Surplus modal BEP: Wajib >= 5% jika < 1 bulan, dan WAJIB >= 1% jika >= 1 bulan.\n"
-            f"3. Peluang baru harus memiliki APY jauh lebih tinggi dan BEP cepat.\n\n"
+            f"3. Peluang baru wajib OTENTIK STABIL (bukan manipulasi spike liar) dengan APY jauh lebih tinggi dan BEP cepat.\n\n"
             f"Tugas: Apakah rotasi disetujui? Jawab 'SETUJUI' atau 'TOLAK' diikuti alasan analitis 1 kalimat."
         )
 

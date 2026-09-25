@@ -40,7 +40,8 @@ class HistoricalStore:
         ai_decision: Optional[str] = None,
         lesson_learned: Optional[str] = None,
         tactical_rule: Optional[str] = None,
-        pair_reputation_score: float = 0.0
+        pair_reputation_score: float = 0.0,
+        context_snapshot: Optional[Dict[str, Any]] = None
     ):
         return self.db.record_agi_experience(
             event_type=event_type,
@@ -53,7 +54,8 @@ class HistoricalStore:
             ai_decision=ai_decision,
             lesson_learned=lesson_learned,
             tactical_rule=tactical_rule,
-            pair_reputation_score=pair_reputation_score
+            pair_reputation_score=pair_reputation_score,
+            context_snapshot=context_snapshot
         )
 
     def get_pair_reputation(self, base_asset: str) -> Dict[str, Any]:

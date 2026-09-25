@@ -69,8 +69,8 @@ class BotSettings(BaseSettings):
     # Risk Controls
     MARGIN_CALL_THRESHOLD: float = Field(default=0.80, description="Ambang batas peringatan margin ratio / MMR Bitget (80%)")
     AUTO_CLOSE_MARGIN_RATIO: float = Field(default=0.90, description="Ambang batas margin ratio / MMR Bitget untuk auto-close darurat (90%)")
-    HARD_TAKE_PROFIT_PERCENT: float = Field(default=0.05, description="Target Hard Take Profit otomatis (% dari modal posisi)")
-    HARD_STOP_LOSS_PERCENT: float = Field(default=0.05, description="Batas Hard Stop Loss otomatis (% dari modal posisi)")
+    FUTURES_MAX_LOSS_PERCENT: float = Field(default=0.90, description="Batas maksimal kerugian unrealized futures (-90% margin) untuk batalkan delta neutral")
+    REQUIRE_POSITIVE_SPREAD: bool = Field(default=True, description="Pastikan basis spread tetap positif (Perp >= Spot)")
     EMERGENCY_EXIT_FUNDING_RATE: float = Field(default=0.0, description="Zero tolerance untuk funding rate negatif (< 0.0% langsung exit)")
     EXIT_NEGATIVE_CYCLES_COUNT: int = Field(default=1, description="Negative funding cycle count to trigger exit")
 
