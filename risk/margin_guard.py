@@ -127,9 +127,9 @@ class MarginGuard:
                         f"MMR Bitget: {pos.current_margin_ratio:.1%} | Liq Price: ${pos.liquidation_price:,.4f}"
                     )
 
-                    # 2. Proteksi Darurat: BATALKAN DELTA NEUTRAL JIKA ROE FUTURES MINUS >= 90% (ATAU MMR >= 90%)
-                    auto_close_threshold = getattr(settings, "AUTO_CLOSE_MARGIN_RATIO", 0.90)
-                    max_roe_loss_pct = getattr(settings, "FUTURES_MAX_ROE_LOSS_PERCENT", 90.0)
+                    # 2. Proteksi Darurat: BATALKAN DELTA NEUTRAL JIKA ROE FUTURES MINUS >= 85% (ATAU MMR >= 85%)
+                    auto_close_threshold = getattr(settings, "AUTO_CLOSE_MARGIN_RATIO", 0.85)
+                    max_roe_loss_pct = getattr(settings, "FUTURES_MAX_ROE_LOSS_PERCENT", 85.0)
                     
                     perp_margin = (getattr(pos.perp_leg, "nominal_usdt", 0.0) or (pos.perp_leg.amount * pos.perp_leg.entry_price)) / max(1, getattr(pos, "leverage", 1))
                     perp_unrealized_pnl = getattr(pos.perp_leg, "unrealized_pnl", 0.0)
@@ -141,37 +141,38 @@ class MarginGuard:
 
                     if is_mmr_critical or is_roe_critical:
                         log.critical(
-                            f"🚨 [BATALKAN DELTA NEUTRAL - ROE FUTURES MINUS >= {max_roe_loss_pct:.0f}%] Kaki Futures {pos.base_asset} "
-                            f"melebihi batas kerugian 90%! ROE Bitget: {effective_roe:+.2f}% (Batas: -{max_roe_loss_pct:.0f}%), "
+                            f"🚨 [BATALKAN DELTA NEUTRAL - ROE/MMR MELEWATI 85%] Kaki Futures {pos.base_asset} "
+                            f"melebihi batas toleransi 85%! ROE Bitget: {effective_roe:+.2f}% (Batas: -{max_roe_loss_pct:.0f}%), "
                             f"MMR Bitget: {pos.current_margin_ratio:.1%} (Batas: {auto_close_threshold:.0%}), "
                             f"Perp uPnL: ${perp_unrealized_pnl:+.4f} / Margin ${perp_margin:.2f}. "
-                            f"Membatalkan delta neutral seketika untuk menyelamatkan modal dari likuidasi bursa!"
+                            f"Membatalkan delta neutral dengan Limit Order Maker & spread positif untuk menyelamatkan modal!"
                         )
                         cancel_msg = (
-                            f"🚨 *[BATALKAN DELTA NEUTRAL - ROE FUTURES MINUS >= {max_roe_loss_pct:.0f}%]*\n"
+                            f"🚨 *[BATALKAN DELTA NEUTRAL - ROE/MMR MELEWATI 85%]*\n"
                             f"Posisi: `{pos.base_asset}`\n"
                             f"ROE Futures Bitget: `{effective_roe:+.2f}%` (Batas Maksimal Minus: -{max_roe_loss_pct:.0f}%)\n"
                             f"MMR Bitget: `{pos.current_margin_ratio:.1%}` (Batas: {auto_close_threshold:.0%})\n"
                             f"Futures uPnL: `${perp_unrealized_pnl:+.4f} USDT` / Margin `${perp_margin:.2f} USDT`\n"
-                            f"Tindakan: Membatalkan delta neutral dan menutup kedua kaki secara instan!"
+                            f"Tindakan: Membatalkan delta neutral dan menutup posisi via Limit Order Maker dengan spread positif!"
                         )
                         await notifier.send_message(cancel_msg)
                         await self.executor.close_delta_neutral_position(
                             position_id=pos.position_id,
-                            reason=f"BATALKAN_DELTA_NEUTRAL_ROE_MINUS_{max_roe_loss_pct:.0f}% (ROE: {effective_roe:+.1f}%, MMR: {pos.current_margin_ratio:.1%})"
+                            reason=f"BATALKAN_DELTA_NEUTRAL_ROE_MMR_85% (ROE: {effective_roe:+.1f}%, MMR: {pos.current_margin_ratio:.1%})"
                         )
                         continue
 
-                    # Peringatan dini jika margin ratio mendekati ambang batas (>= 80%)
-                    warn_threshold = getattr(settings, "MARGIN_CALL_THRESHOLD", 0.80)
-                    if pos.current_margin_ratio >= warn_threshold:
+                    # Peringatan dini jika margin ratio atau ROE mendekati ambang batas (>= 75%)
+                    warn_threshold = getattr(settings, "MARGIN_CALL_THRESHOLD", 0.75)
+                    if pos.current_margin_ratio >= warn_threshold or effective_roe <= -(warn_threshold * 100.0):
                         warn_msg = (
-                            f"⚠️ *[MARGIN WARNING]*\n"
+                            f"⚠️ *[MARGIN & ROE WARNING]*\n"
                             f"Posisi: `{pos.base_asset}`\n"
                             f"MMR Bitget saat ini: `{pos.current_margin_ratio:.1%}` (Peringatan: {warn_threshold:.0%})\n"
+                            f"ROE Futures saat ini: `{effective_roe:+.2f}%`\n"
                             f"Harga Saat Ini: `${current_perp_p:,.4f}`\n"
                             f"Harga Likuidasi: `${pos.liquidation_price:,.4f}`\n"
-                            f"Jika minus menyentuh 90%, posisi delta neutral akan dibatalkan otomatis!"
+                            f"Jika menyentuh 85%, posisi delta neutral akan dibatalkan otomatis via Maker Limit Order!"
                         )
                         log.warning(warn_msg.replace("*", "").replace("`", ""))
                         await notifier.send_message(warn_msg)

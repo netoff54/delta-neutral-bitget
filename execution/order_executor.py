@@ -196,12 +196,28 @@ class OrderExecutor:
             except Exception as e:
                 log.debug(f"Spot balance check notice on emergency unwind: {e}")
 
-            await self.client.execute_spot_order(
+            unwind_price = spot_entry_target_p
+            try:
+                st = await self.client.client.fetch_ticker(opportunity.spot_symbol)
+                unwind_price = float(st.get("ask") or st.get("last") or unwind_price)
+            except Exception:
+                pass
+
+            res_unwind = await self.client.execute_spot_order(
                 symbol=opportunity.spot_symbol,
                 side="sell",
                 amount=sell_qty,
-                order_type="market"
+                order_type="limit" if settings.USE_MAKER_ORDERS else "market",
+                price=unwind_price,
+                post_only=settings.USE_MAKER_ORDERS
             )
+            if not res_unwind.success and settings.USE_MAKER_ORDERS:
+                await self.client.execute_spot_order(
+                    symbol=opportunity.spot_symbol,
+                    side="sell",
+                    amount=sell_qty,
+                    order_type="market"
+                )
             return None
 
         # 4. Kedua kaki berhasil -> Catat Posisi Delta Neutral
@@ -326,17 +342,72 @@ class OrderExecutor:
         pos.status = "CLOSING"
         self.pos_mgr.update_position(pos)
 
-        # 1. Tutup Posisi Short Futures terlebih dahulu (Beli kembali di perp)
-        log.info(f"-> Menutup Short Perp {pos.perp_leg.symbol} sejumlah {pos.perp_leg.amount}...")
+        # Ambil harga ticker live untuk eksekusi 100% Market Maker (Limit Order) & JAMIN SPREAD POSITIF
+        perp_order_type = "limit" if settings.USE_MAKER_ORDERS else "market"
+        spot_order_type = "limit" if settings.USE_MAKER_ORDERS else "market"
+        use_post_only = settings.USE_MAKER_ORDERS
+
+        target_perp_buy = pos.perp_leg.current_price
+        target_spot_sell = pos.spot_leg.current_price
+
+        try:
+            spot_ticker = await self.client.client.fetch_ticker(pos.spot_leg.symbol)
+            perp_ticker = await self.client.client.fetch_ticker(pos.perp_leg.symbol)
+
+            spot_bid = float(spot_ticker.get("bid") or spot_ticker.get("last") or pos.spot_leg.current_price)
+            spot_ask = float(spot_ticker.get("ask") or spot_ticker.get("last") or pos.spot_leg.current_price)
+            perp_bid = float(perp_ticker.get("bid") or perp_ticker.get("last") or pos.perp_leg.current_price)
+            perp_ask = float(perp_ticker.get("ask") or perp_ticker.get("last") or pos.perp_leg.current_price)
+
+            if settings.USE_MAKER_ORDERS:
+                # Maker untuk Futures Buy: antre di Best Bid futures
+                target_perp_buy = perp_bid
+                # Maker untuk Spot Sell: antre di Best Ask spot
+                target_spot_sell = spot_ask
+
+            # JAMIN BASIS SPREAD POSITIF SAAT EXIT (Spot Sell Price >= Futures Buy Price)
+            if settings.REQUIRE_POSITIVE_SPREAD:
+                if target_spot_sell < target_perp_buy:
+                    target_spot_sell = max(target_spot_sell, target_perp_buy)
+                    target_perp_buy = min(target_perp_buy, target_spot_sell)
+                if target_spot_sell <= target_perp_buy:
+                    target_spot_sell = round(target_perp_buy * 1.0001, 6)
+        except Exception as p_err:
+            log.debug(f"[OrderExecutor] Live ticker exit pricing notice: {p_err}")
+
+        exit_spread_pct = ((target_spot_sell - target_perp_buy) / target_perp_buy) * 100.0 if target_perp_buy > 0 else 0.0
+        log.info(
+            f"🎯 [Full Maker Exit] {pos.base_asset}: Mode Maker (Limit Post-Only) | "
+            f"Spot Sell Target: ${target_spot_sell:,.4f} | Perp Buy Target: ${target_perp_buy:,.4f} | "
+            f"Spread Exit Terjamin: {exit_spread_pct:+.3f}% (Positif)"
+        )
+
+        # 1. Tutup Posisi Short Futures sebagai MAKER (Limit Order Beli Kembali di Perp)
+        log.info(f"-> Menutup Short Perp {pos.perp_leg.symbol} sejumlah {pos.perp_leg.amount} @ ${target_perp_buy:,.4f} (Maker)...")
         perp_close_res = await self.client.execute_perp_order(
             symbol=pos.perp_leg.symbol,
             side="buy",
             amount=pos.perp_leg.amount,
-            order_type="market",
-            reduce_only=True
+            order_type=perp_order_type,
+            price=target_perp_buy,
+            reduce_only=True,
+            post_only=use_post_only
         )
 
-        # 2. Jual Spot Token
+        if not perp_close_res.success and use_post_only:
+            # Fallback Limit Order GTC jika post-only crossing orderbook
+            log.warning(f"Post-only perp close tertolak ({perp_close_res.error_message}), fallback limit GTC...")
+            perp_close_res = await self.client.execute_perp_order(
+                symbol=pos.perp_leg.symbol,
+                side="buy",
+                amount=pos.perp_leg.amount,
+                order_type="limit",
+                price=target_perp_buy,
+                reduce_only=True,
+                post_only=False
+            )
+
+        # 2. Jual Spot Token sebagai MAKER (Limit Order Jual di Spot)
         actual_spot_qty = pos.spot_leg.amount
         try:
             spot_bal = await self.client.client.fetch_balance({"type": "spot"})
@@ -346,13 +417,26 @@ class OrderExecutor:
         except Exception:
             pass
 
-        log.info(f"-> Menjual Spot {pos.spot_leg.symbol} sejumlah {actual_spot_qty}...")
+        log.info(f"-> Menjual Spot {pos.spot_leg.symbol} sejumlah {actual_spot_qty} @ ${target_spot_sell:,.4f} (Maker)...")
         spot_close_res = await self.client.execute_spot_order(
             symbol=pos.spot_leg.symbol,
             side="sell",
             amount=actual_spot_qty,
-            order_type="market"
+            order_type=spot_order_type,
+            price=target_spot_sell,
+            post_only=use_post_only
         )
+
+        if not spot_close_res.success and use_post_only:
+            log.warning(f"Post-only spot sell tertolak ({spot_close_res.error_message}), fallback limit GTC...")
+            spot_close_res = await self.client.execute_spot_order(
+                symbol=pos.spot_leg.symbol,
+                side="sell",
+                amount=actual_spot_qty,
+                order_type="limit",
+                price=target_spot_sell,
+                post_only=False
+            )
 
         # Simpan jejak order penutupan ke database
         try:

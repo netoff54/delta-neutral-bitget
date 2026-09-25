@@ -53,25 +53,66 @@ class AutoRebalancer:
                         f"Melakukan kalibrasi rebalancing..."
                     )
                     if drift > 0:
-                        # Spot lebih banyak dari short -> Tambah Short Perp
-                        log.info(f"-> Menambah Short Perp {pos.perp_leg.symbol} sejumlah {drift:.4f}...")
+                        # Spot lebih banyak dari short -> Tambah Short Perp sebagai MAKER
+                        target_perp_p = pos.perp_leg.current_price
+                        try:
+                            pt = await self.client.client.fetch_ticker(pos.perp_leg.symbol)
+                            target_perp_p = float(pt.get("ask") or pt.get("last") or target_perp_p)
+                            if settings.REQUIRE_POSITIVE_SPREAD:
+                                target_perp_p = max(target_perp_p, pos.spot_leg.current_price)
+                        except Exception:
+                            pass
+
+                        log.info(f"-> Menambah Short Perp {pos.perp_leg.symbol} sejumlah {drift:.4f} @ ${target_perp_p:,.4f} (Maker)...")
                         res = await self.client.execute_perp_order(
                             symbol=pos.perp_leg.symbol,
                             side="sell",
                             amount=abs(drift),
-                            order_type="market"
+                            order_type="limit" if settings.USE_MAKER_ORDERS else "market",
+                            price=target_perp_p,
+                            post_only=settings.USE_MAKER_ORDERS
                         )
+                        if not res.success and settings.USE_MAKER_ORDERS:
+                            # Fallback limit GTC
+                            res = await self.client.execute_perp_order(
+                                symbol=pos.perp_leg.symbol,
+                                side="sell",
+                                amount=abs(drift),
+                                order_type="limit",
+                                price=target_perp_p,
+                                post_only=False
+                            )
                         if res.success:
                             pos.perp_leg.amount += res.filled_amount
                     else:
-                        # Short lebih banyak dari spot -> Tambah Beli Spot
-                        log.info(f"-> Menambah Beli Spot {pos.spot_leg.symbol} sejumlah {abs(drift):.4f}...")
+                        # Short lebih banyak dari spot -> Tambah Beli Spot sebagai MAKER
+                        target_spot_p = pos.spot_leg.current_price
+                        try:
+                            st = await self.client.client.fetch_ticker(pos.spot_leg.symbol)
+                            target_spot_p = float(st.get("bid") or st.get("last") or target_spot_p)
+                            if settings.REQUIRE_POSITIVE_SPREAD:
+                                target_spot_p = min(target_spot_p, pos.perp_leg.current_price)
+                        except Exception:
+                            pass
+
+                        log.info(f"-> Menambah Beli Spot {pos.spot_leg.symbol} sejumlah {abs(drift):.4f} @ ${target_spot_p:,.4f} (Maker)...")
                         res = await self.client.execute_spot_order(
                             symbol=pos.spot_leg.symbol,
                             side="buy",
                             amount=abs(drift),
-                            order_type="market"
+                            order_type="limit" if settings.USE_MAKER_ORDERS else "market",
+                            price=target_spot_p,
+                            post_only=settings.USE_MAKER_ORDERS
                         )
+                        if not res.success and settings.USE_MAKER_ORDERS:
+                            res = await self.client.execute_spot_order(
+                                symbol=pos.spot_leg.symbol,
+                                side="buy",
+                                amount=abs(drift),
+                                order_type="limit",
+                                price=target_spot_p,
+                                post_only=False
+                            )
                         if res.success:
                             pos.spot_leg.amount += res.filled_amount
 

@@ -429,10 +429,11 @@ class GeminiBrain:
             f"   - Koin dengan diagnosis 'MANIPULATIVE_VOLATILE' atau 'DECAYING_TRAP' (banyak lonjakan spike buatan, sering flip negatif > 3x dalam 120 hari, atau lonjakan sesaat pump-and-dump) HARUS DITOLAK karena berbahaya menyedot modal atau menjebak posisi.\n"
             f"   - HANYA PILIH koin dengan status 'STABLE_AUTHENTIC' (konsistensi 120 hari >= 95%, deviasi rendah, dividen stabil tanpa manipulasi market maker).\n"
             f"2. Frekuensi Pembayaran Funding: Koin dengan interval 1h atau 4h yang otentik stabil sangat diprioritaskan karena frekuensi panen dividen lebih sering per hari (24x/hari untuk 1h, 6x/hari untuk 4h) sehingga mempercepat tercapainya impas biaya taker.\n"
-            f"3. Pastikan biaya taker (spot + perp) cepat terbayar dari dividen funding (Taker Impas < 48 jam).\n"
-            f"4. Basis Spread Positif: Wajib memastikan spread perp >= spot.\n\n"
+            f"3. Pastikan biaya maker/taker (spot + perp) cepat terbayar dari dividen funding (Taker Impas < 48 jam).\n"
+            f"4. Basis Spread Positif Terjamin: Wajib memastikan perp sell price >= spot buy price (spread >= +0.00%).\n"
+            f"5. 100% Market Maker: Seluruh eksekusi (pembukaan, rebalancing drift, penutupan) wajib Limit Order (Maker) post-only.\n\n"
             f"Tugas: Tentukan SATU koin terbaik yang OTENTIK STABIL (bukan manipulatif), konsisten positif 4 bulan, dan berdaya hasil tinggi.\n"
-            f"Format jawaban: 'PILIH: [KOIN]' diikuti alasan 1 kalimat berbasis data historis 120 hari & biaya taker."
+            f"Format jawaban: 'PILIH: [KOIN]' diikuti alasan 1 kalimat berbasis data historis 120 hari & biaya maker/taker."
         )
 
         ai_response = await self.call_gemini(prompt)
@@ -651,8 +652,9 @@ class GeminiBrain:
             f"   - Proyeksi Dividen Siklus Berikutnya: +${pos.projected_next_funding_payout:.5f} USDT\n"
             f"   - Akumulasi Funding Diterima: +${pos.cumulative_funding_received:.4f} USDT | Total Biaya: ${pos.total_fees_paid:.4f} USDT\n"
             f"   - Net PnL Riil: ${pos.net_pnl_usdt:+.4f} USDT ({'BEP TERCAPAI' if pos.is_bep_reached else 'MENUJU BEP'})\n"
-            f"   - MMR Bitget Riil: {pos.current_margin_ratio*100:.1f}% (Batas Auto-Close Darurat Likuidasi: 90% | Peringatan: 80%)\n"
-            f"   - Proteksi Hard TP & SL: Hard TP +5% & Hard SL -5% aktif otomatis di RiskGuard.\n"
+            f"   - MMR Bitget Riil: {pos.current_margin_ratio*100:.1f}% (Batas Pembatalan Delta Neutral: 85% | Peringatan: 75%)\n"
+            f"   - ROE Futures Bitget: {pos.current_roe_percent:+.2f}% (Batas Maksimal Minus: -85.0%)\n"
+            f"   - Eksekusi 100% Market Maker: Semua transaksi wajib Limit Order post-only & spread positif terjamin.\n"
             f"   - Countdown Menuju Settlement: {market_countdown_minutes if market_countdown_minutes is not None else '?'} menit\n"
             f"   - Rekam Jejak Koin: {rep_text}\n"
             f"2. Pasar Alternatif: {alts_str}\n"
