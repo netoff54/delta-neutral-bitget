@@ -94,10 +94,17 @@ class MarginGuard:
                             matched_bitget_pos.get("info", {}).get("liquidationPrice") or
                             0.0
                         )
+                        # Tarik Return On Equity (ROE) riil langsung dari Bitget Futures (persentase)
+                        raw_roe = matched_bitget_pos.get("percentage")
+                        if raw_roe is None:
+                            raw_roe = matched_bitget_pos.get("info", {}).get("unrealizedPLR")
+
                         if raw_mmr > 0.0:
                             pos.current_margin_ratio = round(raw_mmr, 4)
                         if raw_liq > 0.0:
                             pos.liquidation_price = round(raw_liq, 4)
+                        if raw_roe is not None:
+                            pos.current_roe_percent = round(float(raw_roe), 2)
                     else:
                         # Fallback estimasi jika API data posisi sementara delay
                         entry_p = pos.perp_leg.entry_price
@@ -109,45 +116,49 @@ class MarginGuard:
                         pos.current_margin_ratio = round(max(0.0, margin_ratio), 4)
                         est_liq_price = entry_p * (1.0 + (initial_margin_rate - maint_margin_rate))
                         pos.liquidation_price = round(est_liq_price, 4)
+                        perp_margin_est = (pos.perp_leg.amount * entry_p) / lev if lev > 0 else 1.0
+                        pos.current_roe_percent = round((pos.perp_leg.unrealized_pnl / max(0.01, perp_margin_est)) * 100.0, 2)
 
                     self.pos_mgr.update_position(pos)
 
                     log.info(
                         f"[RiskGuard] {pos.base_asset} -> Spot: ${current_spot_p:,.4f} | Perp: ${current_perp_p:,.4f} | "
-                        f"Net uPnL: ${net_unrealized:+.4f} | MMR Bitget: {pos.current_margin_ratio:.1%} | "
-                        f"Liq Price: ${pos.liquidation_price:,.4f}"
+                        f"Net uPnL: ${net_unrealized:+.4f} | ROE Futures: {pos.current_roe_percent:+.2f}% | "
+                        f"MMR Bitget: {pos.current_margin_ratio:.1%} | Liq Price: ${pos.liquidation_price:,.4f}"
                     )
 
-                    # 2. Proteksi Darurat: BATALKAN DELTA NEUTRAL JIKA FUTURES MINUS >= 90% (MMR >= 90% atau Kerugian Futures >= 90%)
+                    # 2. Proteksi Darurat: BATALKAN DELTA NEUTRAL JIKA ROE FUTURES MINUS >= 90% (ATAU MMR >= 90%)
                     auto_close_threshold = getattr(settings, "AUTO_CLOSE_MARGIN_RATIO", 0.90)
-                    futures_max_loss_pct = getattr(settings, "FUTURES_MAX_LOSS_PERCENT", 0.90)
+                    max_roe_loss_pct = getattr(settings, "FUTURES_MAX_ROE_LOSS_PERCENT", 90.0)
                     
                     perp_margin = (getattr(pos.perp_leg, "nominal_usdt", 0.0) or (pos.perp_leg.amount * pos.perp_leg.entry_price)) / max(1, getattr(pos, "leverage", 1))
                     perp_unrealized_pnl = getattr(pos.perp_leg, "unrealized_pnl", 0.0)
-                    perp_loss_pct = (abs(perp_unrealized_pnl) / perp_margin) if (perp_unrealized_pnl < 0 and perp_margin > 0) else 0.0
+                    calc_roe = (perp_unrealized_pnl / perp_margin * 100.0) if perp_margin > 0 else 0.0
+                    effective_roe = pos.current_roe_percent if pos.current_roe_percent != 0.0 else calc_roe
 
                     is_mmr_critical = pos.current_margin_ratio >= auto_close_threshold
-                    is_futures_loss_critical = perp_loss_pct >= futures_max_loss_pct or perp_unrealized_pnl <= (-futures_max_loss_pct * perp_margin)
+                    is_roe_critical = effective_roe <= -max_roe_loss_pct or perp_unrealized_pnl <= (-(max_roe_loss_pct / 100.0) * perp_margin)
 
-                    if is_mmr_critical or is_futures_loss_critical:
+                    if is_mmr_critical or is_roe_critical:
                         log.critical(
-                            f"🚨 [BATALKAN DELTA NEUTRAL - FUTURES MINUS >= 90%] Kaki Futures {pos.base_asset} "
-                            f"minus melebihi batas 90%! MMR Bitget: {pos.current_margin_ratio:.1%} (>= {auto_close_threshold:.0%}), "
-                            f"Perp uPnL: ${perp_unrealized_pnl:+.4f} / Margin ${perp_margin:.2f} ({perp_loss_pct:.1%}). "
+                            f"🚨 [BATALKAN DELTA NEUTRAL - ROE FUTURES MINUS >= {max_roe_loss_pct:.0f}%] Kaki Futures {pos.base_asset} "
+                            f"melebihi batas kerugian 90%! ROE Bitget: {effective_roe:+.2f}% (Batas: -{max_roe_loss_pct:.0f}%), "
+                            f"MMR Bitget: {pos.current_margin_ratio:.1%} (Batas: {auto_close_threshold:.0%}), "
+                            f"Perp uPnL: ${perp_unrealized_pnl:+.4f} / Margin ${perp_margin:.2f}. "
                             f"Membatalkan delta neutral seketika untuk menyelamatkan modal dari likuidasi bursa!"
                         )
                         cancel_msg = (
-                            f"🚨 *[BATALKAN DELTA NEUTRAL - FUTURES MINUS >= 90%]*\n"
+                            f"🚨 *[BATALKAN DELTA NEUTRAL - ROE FUTURES MINUS >= {max_roe_loss_pct:.0f}%]*\n"
                             f"Posisi: `{pos.base_asset}`\n"
+                            f"ROE Futures Bitget: `{effective_roe:+.2f}%` (Batas Maksimal Minus: -{max_roe_loss_pct:.0f}%)\n"
                             f"MMR Bitget: `{pos.current_margin_ratio:.1%}` (Batas: {auto_close_threshold:.0%})\n"
-                            f"Futures Loss: `{perp_loss_pct:.1%}` (Batas: {futures_max_loss_pct:.0%})\n"
                             f"Futures uPnL: `${perp_unrealized_pnl:+.4f} USDT` / Margin `${perp_margin:.2f} USDT`\n"
                             f"Tindakan: Membatalkan delta neutral dan menutup kedua kaki secara instan!"
                         )
                         await notifier.send_message(cancel_msg)
                         await self.executor.close_delta_neutral_position(
                             position_id=pos.position_id,
-                            reason=f"BATALKAN_DELTA_NEUTRAL_FUTURES_MINUS_90% (MMR: {pos.current_margin_ratio:.1%}, PerpLoss: {perp_loss_pct:.1%})"
+                            reason=f"BATALKAN_DELTA_NEUTRAL_ROE_MINUS_{max_roe_loss_pct:.0f}% (ROE: {effective_roe:+.1f}%, MMR: {pos.current_margin_ratio:.1%})"
                         )
                         continue
 

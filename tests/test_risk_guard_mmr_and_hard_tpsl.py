@@ -64,10 +64,10 @@ async def test_mmr_exceeds_90_pct_triggers_cancellation(mock_setup):
     assert pos.current_margin_ratio == 0.92
     mock_executor.close_delta_neutral_position.assert_awaited_once()
     args, kwargs = mock_executor.close_delta_neutral_position.call_args
-    assert "BATALKAN_DELTA_NEUTRAL_FUTURES_MINUS_90%" in kwargs.get("reason", "")
+    assert "BATALKAN_DELTA_NEUTRAL" in kwargs.get("reason", "")
 
 @pytest.mark.asyncio
-async def test_futures_loss_90_pct_triggers_cancellation(mock_setup):
+async def test_futures_roe_minus_90_pct_triggers_cancellation(mock_setup):
     mock_client, mock_pos_mgr, mock_executor, pos = mock_setup
 
     mock_client.fetch_tickers_by_type = AsyncMock(side_effect=lambda mtype: (
@@ -75,20 +75,22 @@ async def test_futures_loss_90_pct_triggers_cancellation(mock_setup):
         else {"ARX/USDT": {"last": 0.38, "bid": 0.38}}
     ))
 
-    # Low MMR reported by Bitget, but perp unrealized loss is -18.5 USDT out of 20 USDT margin (minus 92.5%)
+    # Bitget returns real position with ROE -92.5%
     mock_client.fetch_positions = AsyncMock(return_value=[{
         "symbol": "ARX/USDT:USDT",
         "marginRatio": 0.15,
-        "liquidationPrice": 0.45
+        "liquidationPrice": 0.45,
+        "percentage": -92.5
     }])
-    pos.perp_leg.unrealized_pnl = -18.50  # -18.50 / 20.0 = -92.5%
 
     guard = MarginGuard(client=mock_client, pos_mgr=mock_pos_mgr, executor=mock_executor)
     await guard.check_positions_health()
 
+    assert pos.current_roe_percent == -92.5
     mock_executor.close_delta_neutral_position.assert_awaited_once()
     args, kwargs = mock_executor.close_delta_neutral_position.call_args
-    assert "BATALKAN_DELTA_NEUTRAL_FUTURES_MINUS_90%" in kwargs.get("reason", "")
+    assert "BATALKAN_DELTA_NEUTRAL" in kwargs.get("reason", "")
+    assert "90%" in kwargs.get("reason", "")
 
 @pytest.mark.asyncio
 async def test_no_artificial_tp_sl_delta_neutral_continues_holding(mock_setup):

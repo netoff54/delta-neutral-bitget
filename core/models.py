@@ -147,6 +147,7 @@ class DeltaNeutralPosition(BaseModel):
     projected_next_funding_payout: float = 0.0
     
     current_margin_ratio: float = 0.0
+    current_roe_percent: float = Field(default=0.0, description="Return On Equity (ROE) Futures Bitget (%)")
     liquidation_price: Optional[float] = None
     
     status: str = Field(default="OPEN", description="'OPEN', 'REBALANCING', 'CLOSING', 'CLOSED'")

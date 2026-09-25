@@ -319,6 +319,7 @@ def display_active_positions():
     table.add_column("Net PnL", style="bold white", justify="right")
     table.add_column("Status BEP", justify="center")
     table.add_column("MMR Bitget", style="bold yellow", justify="right")
+    table.add_column("ROE Futures", style="bold cyan", justify="right")
     table.add_column("Durasi", style="cyan", justify="right")
 
     from utils.interval_helper import safe_hours_passed
@@ -331,7 +332,11 @@ def display_active_positions():
         holding_h = safe_hours_passed(pos.entry_time) if hasattr(pos, "entry_time") else 0.0
 
         margin_color = "red" if pos.current_margin_ratio >= 0.80 else ("yellow" if pos.current_margin_ratio >= 0.50 else "green")
-        margin_str = f"[{margin_color}]{pos.current_margin_ratio:.1%} MMR (Max 90%)[/{margin_color}]"
+        margin_str = f"[{margin_color}]{pos.current_margin_ratio:.1%} MMR[/{margin_color}]"
+
+        roe_val = getattr(pos, "current_roe_percent", 0.0)
+        roe_color = "red" if roe_val <= -50.0 else ("yellow" if roe_val < 0 else "green")
+        roe_str = f"[{roe_color}]{roe_val:+.2f}%[/{roe_color}]"
 
         spot_nominal = getattr(pos.spot_leg, "nominal_usdt", 0.0) or (pos.spot_leg.amount * pos.spot_leg.entry_price)
 
@@ -340,7 +345,7 @@ def display_active_positions():
             f"📊 [Posisi Aktif] Koin: {pos.base_asset} | Spot: {pos.spot_leg.amount:.2f} (~${spot_nominal:.2f} USDT @ ${pos.spot_leg.current_price:,.4f}) | "
             f"Perp Short: {pos.perp_leg.amount:.2f} (@ ${pos.perp_leg.current_price:,.4f}) | Panen Funding: +${pos.cumulative_funding_received:.4f} USDT | "
             f"uPnL: ${pos.unrealized_pnl_usdt:+.4f} | Net PnL: ${pos.net_pnl_usdt:+.4f} ({bep_text}) | "
-            f"MMR Bitget: {pos.current_margin_ratio:.1%} (Max 90%) | Durasi: {holding_h:.1f} jam"
+            f"ROE Futures: {roe_val:+.2f}% (Batas: -90%) | MMR Bitget: {pos.current_margin_ratio:.1%} (Max 90%) | Durasi: {holding_h:.1f} jam"
         )
 
         table.add_row(
@@ -353,6 +358,7 @@ def display_active_positions():
             f"[{pnl_color}]${pos.net_pnl_usdt:+.4f}[/{pnl_color}]",
             bep_badge,
             margin_str,
+            roe_str,
             f"{holding_h:.1f} jam"
         )
 
@@ -388,6 +394,7 @@ def _run_dedicated_health_server(port: int):
                 "net_delta": p.net_delta,
                 "interval_hours": p.funding_interval_hours,
                 "mmr_percent": round(p.current_margin_ratio * 100.0, 2),
+                "roe_percent": getattr(p, "current_roe_percent", 0.0),
                 "is_bep_reached": p.is_bep_reached
             }
             for p in active_positions
