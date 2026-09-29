@@ -146,6 +146,11 @@ class DeltaNeutralPosition(BaseModel):
     last_funding_rate: float = 0.0
     projected_next_funding_payout: float = 0.0
     
+    # Ground-Truth Portfolio BEP Tracking (Bitget Real Equity vs Baseline Modal $64)
+    portfolio_equity_now: float = Field(default=0.0, description="Ekuitas gabungan riil di Bitget saat ini")
+    portfolio_net_pnl_usdt: float = Field(default=0.0, description="Net PnL portofolio riil vs modal awal $64 (setelah fee keluar)")
+    portfolio_bep_reached: bool = Field(default=False, description="Status BEP mutlak portofolio Bitget")
+
     current_margin_ratio: float = 0.0
     current_roe_percent: float = Field(default=0.0, description="Return On Equity (ROE) Futures Bitget (%)")
     liquidation_price: Optional[float] = None

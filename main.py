@@ -267,7 +267,7 @@ def display_opportunities(opportunities, top_n: int = 10):
             elif "Waktu impas" in reason:
                 status_text = "[dim red][X] Impas > 72h[/dim red]"
             elif "Net APY" in reason:
-                status_text = "[dim red][X] APY < 15%[/dim red]"
+                status_text = f"[dim red][X] APY < {settings.MIN_NET_APY_PERCENT:.0f}%[/dim red]"
             elif "Funding rate bernilai negatif" in reason:
                 status_text = "[dim red][X] Rate Negatif[/dim red]"
             else:
@@ -338,14 +338,34 @@ def display_active_positions():
         roe_color = "red" if roe_val <= -50.0 else ("yellow" if roe_val < 0 else "green")
         roe_str = f"[{roe_color}]{roe_val:+.2f}%[/{roe_color}]"
 
-        spot_nominal = getattr(pos.spot_leg, "nominal_usdt", 0.0) or (pos.spot_leg.amount * pos.spot_leg.entry_price)
+        port_equity = getattr(pos, "portfolio_equity_now", 0.0)
+        port_net = getattr(pos, "portfolio_net_pnl_usdt", pos.net_pnl_usdt)
+        is_port_bep = getattr(pos, "portfolio_bep_reached", False)
+        port_bep_badge = "BEP TERCAPAI (Untung Bersih)" if is_port_bep else f"Menuju BEP ({port_net:+.4f} USDT)"
 
-        # Log kalimat utuh agar di cloud viewer Render tidak pernah terpotong
+        # Hitung live basis spread
+        basis_spread = ((pos.perp_leg.current_price - pos.spot_leg.current_price) / pos.spot_leg.current_price * 100.0) if pos.spot_leg.current_price > 0 else 0.0
+        spread_status = "POSITIF" if basis_spread >= 0 else "NEGATIF"
+
+        # Log format multi-line yang sangat jelas, rapi, dan TIDAK AKAN PERNAH TERPOTONG di viewer Render
         log.info(
-            f"📊 [Posisi Aktif] Koin: {pos.base_asset} | Spot: {pos.spot_leg.amount:.2f} (~${spot_nominal:.2f} USDT @ ${pos.spot_leg.current_price:,.4f}) | "
-            f"Perp Short: {pos.perp_leg.amount:.2f} (@ ${pos.perp_leg.current_price:,.4f}) | Panen Funding: +${pos.cumulative_funding_received:.4f} USDT | "
-            f"uPnL: ${pos.unrealized_pnl_usdt:+.4f} | Net PnL: ${pos.net_pnl_usdt:+.4f} ({bep_text}) | "
-            f"ROE Futures: {roe_val:+.2f}% (Batas: -90%) | MMR Bitget: {pos.current_margin_ratio:.1%} (Max 90%) | Durasi: {holding_h:.1f} jam"
+            f"\n"
+            f"================== TELEMETRI DELTA-NEUTRAL REAL-TIME (BITGET) ==================\n"
+            f" 🎯 Koin Target        : {pos.base_asset} (Fokus 1 Koin Penuh)\n"
+            f" 💰 Modal Awal User    : ${compounding_manager.initial_seed:.2f} USDT (Baseline Deposit)\n"
+            f" 🏦 Saldo Ekuitas Bitget: ${port_equity:.2f} USDT (Ground-Truth Riil Akun)\n"
+            f" 📊 Status BEP Akun    : {port_bep_badge}\n"
+            f" 📈 Net PnL Portofolio : ${port_net:+.4f} USDT (Bersih setelah Fee Keluar)\n"
+            f" --------------------------------------------------------------------------------\n"
+            f" 🟢 Kaki Spot (Beli)   : {pos.spot_leg.amount:.4f} {pos.base_asset} @ ${pos.spot_leg.entry_price:,.4f} -> Kini: ${pos.spot_leg.current_price:,.4f} (~${spot_nominal:.2f} USDT)\n"
+            f" 🔴 Kaki Perp (Short)  : {pos.perp_leg.amount:.4f} {pos.base_asset} @ ${pos.perp_leg.entry_price:,.4f} -> Kini: ${pos.perp_leg.current_price:,.4f}\n"
+            f" ⚖️ Basis Spread Live  : {basis_spread:+.3f}% ({spread_status})\n"
+            f" 🌾 Funding Dipanen    : +${pos.cumulative_funding_received:.4f} USDT (Realized dari Ledger Bitget)\n"
+            f" ⚡ Funding Rate Live  : {pos.last_funding_rate * 100:+.4f}% / {pos.funding_interval_hours}h\n"
+            f" 🎯 Target Mingguan    : 2.50% Net / Minggu\n"
+            f" 🛡️ MMR Bitget / ROE   : {pos.current_margin_ratio:.1%} MMR | ROE: {roe_val:+.2f}%\n"
+            f" ⏱️ Durasi Holding     : {holding_h:.1f} jam\n"
+            f"================================================================================="
         )
 
         table.add_row(

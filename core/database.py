@@ -51,6 +51,7 @@ class UnifiedDatabase:
     def _get_connection(self):
         """Menyediakan koneksi database dengan abstraksi cursor dictionary."""
         if self.is_postgres:
+            conn = None
             try:
                 import psycopg2
                 import psycopg2.extras
@@ -65,23 +66,47 @@ class UnifiedDatabase:
                     )
 
                 conn = self._pg_pool.getconn()
+                # Uji keaktifan socket koneksi
                 try:
                     if conn.closed != 0:
-                        raise psycopg2.OperationalError("Connection is closed")
+                        raise psycopg2.OperationalError("Closed")
+                    with conn.cursor() as test_cur:
+                        test_cur.execute("SELECT 1;")
+                except Exception:
+                    # Socket koneksi diputus oleh remote server idle timeout, ganti dengan yang segar
+                    try:
+                        self._pg_pool.putconn(conn, close=True)
+                    except Exception:
+                        pass
+                    conn = self._pg_pool.getconn()
+
+                try:
                     yield conn
                     conn.commit()
                 except Exception:
                     conn.rollback()
                     raise
                 finally:
-                    if self._pg_pool and not conn.closed:
+                    if self._pg_pool and conn and not conn.closed:
                         self._pg_pool.putconn(conn)
             except Exception as e:
-                log.error(f"[Database] Koneksi PostgreSQL gagal: {e}. Fallback ke SQLite lokal.")
-                self.is_postgres = False
+                log.warning(f"[Database] Koneksi PostgreSQL sementara kendala: {e}. Fallback sementara ke SQLite lokal.")
+                if self._pg_pool and conn:
+                    try:
+                        self._pg_pool.putconn(conn, close=True)
+                    except Exception:
+                        pass
                 self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-                with self._get_connection() as conn:
-                    yield conn
+                c_lite = sqlite3.connect(str(self.sqlite_path), timeout=15.0)
+                c_lite.row_factory = sqlite3.Row
+                try:
+                    yield c_lite
+                    c_lite.commit()
+                except Exception:
+                    c_lite.rollback()
+                    raise
+                finally:
+                    c_lite.close()
         else:
             conn = sqlite3.connect(str(self.sqlite_path), timeout=15.0)
             conn.row_factory = sqlite3.Row

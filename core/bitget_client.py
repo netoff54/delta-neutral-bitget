@@ -123,12 +123,47 @@ class BitgetClient:
         limit: int = 100,
         since: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """Mengambil riwayat funding rate untuk pasangan tertentu (hingga 7 hari ke belakang)."""
+        """Mengambil riwayat funding rate untuk pasangan tertentu hingga batas maksimal bursa (sampai 3 halaman / 270 siklus)."""
+        clean_sym = symbol.split('/')[0].upper() + "USDT"
+        all_records = []
         try:
+            # Jika limit > 100, gunakan endpoint V2 Bitget dengan paginasi hingga 3 halaman (maksimal bursa)
+            if limit > 100:
+                pages_to_fetch = min(3, (limit + 99) // 100)
+                for page in range(1, pages_to_fetch + 1):
+                    res = await self.client.publicMixGetV2MixMarketHistoryFundRate({
+                        "symbol": clean_sym,
+                        "productType": "USDT-FUTURES",
+                        "pageSize": "100",
+                        "pageNo": str(page)
+                    })
+                    data = res.get("data", [])
+                    if not data:
+                        break
+                    for item in data:
+                        ts_ms = int(item.get("fundingTime", 0))
+                        fr = float(item.get("fundingRate", 0.0) or 0.0)
+                        all_records.append({
+                            "symbol": symbol,
+                            "fundingRate": fr,
+                            "timestamp": ts_ms,
+                            "fundingTimestamp": ts_ms,
+                            "datetime": datetime.utcfromtimestamp(ts_ms / 1000.0).isoformat() + "Z"
+                        })
+                    if len(data) < 100:
+                        break
+                if all_records:
+                    # Urutkan berdasarkan waktu terkecil ke terbesar
+                    all_records.sort(key=lambda x: x["timestamp"])
+                    return all_records[-limit:]
+
             return await self.client.fetch_funding_rate_history(symbol, since=since, limit=limit)
         except Exception as e:
-            log.warning(f"Gagal mengambil riwayat funding rate untuk {symbol}: {e}")
-            return []
+            log.warning(f"Gagal mengambil riwayat funding rate untuk {symbol}: {e}. Fallback ke ccxt.")
+            try:
+                return await self.client.fetch_funding_rate_history(symbol, since=since, limit=min(100, limit))
+            except Exception:
+                return []
 
     async def fetch_tickers(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         """Mengambil ticker harga terkini dengan proteksi error."""
@@ -753,6 +788,25 @@ class BitgetClient:
 
             # Status BEP tercapai HANYA jika Net PnL > 0 (Funding fee riil telah melampaui seluruh 4 biaya transaksi)
             pos.is_bep_reached = (pos.net_pnl_usdt > 0.0)
+
+            # Ground-Truth Portfolio BEP Validation langsung dari saldo akun Bitget
+            try:
+                from risk.compounding_manager import compounding_manager
+                combined = await self.fetch_all_combined_balances()
+                spot_eq = float(combined.get("spot", {}).get("equity_usdt", 0.0) or 0.0)
+                fut_eq = float(combined.get("futures", {}).get("equity_usdt", 0.0) or 0.0)
+                otc_eq = float(combined.get("otc", {}).get("equity_usdt", 0.0) or 0.0) if settings.INCLUDE_OTC_BALANCE else 0.0
+                curr_trading_equity = round(spot_eq + fut_eq + otc_eq, 4)
+
+                port_status = compounding_manager.get_portfolio_bep_status(
+                    current_trading_equity=curr_trading_equity,
+                    est_exit_fees=est_exit_fees
+                )
+                pos.portfolio_equity_now = curr_trading_equity
+                pos.portfolio_net_pnl_usdt = port_status["net_pnl_usdt"]
+                pos.portfolio_bep_reached = port_status["is_bep"]
+            except Exception as pe:
+                log.debug(f"Portfolio ground-truth check notice: {pe}")
 
         except Exception as e:
             log.debug(f"Gagal update live PnL posisi {pos.base_asset}: {e}")

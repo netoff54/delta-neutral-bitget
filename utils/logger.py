@@ -12,7 +12,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 import os
-console_width = int(os.getenv("CONSOLE_WIDTH", "220"))
+console_width = int(os.getenv("CONSOLE_WIDTH", "280"))
 console = Console(width=console_width, force_terminal=True, soft_wrap=True)
 
 def setup_logger(name: str = "delta_neutral", log_file: str = "bot.log") -> logging.Logger:
@@ -20,13 +20,15 @@ def setup_logger(name: str = "delta_neutral", log_file: str = "bot.log") -> logg
     logger.setLevel(logging.INFO)
     
     if not logger.handlers:
-        # Rich Console Handler
+        # Rich Console Handler - Proteksi mutlak teks agar tidak ada yang terpotong di log cloud
         rich_handler = RichHandler(
             console=console,
             show_time=True,
             show_path=False,
             rich_tracebacks=True,
-            markup=True
+            markup=False,  # Jangan interpretasikan tanda kurung siku [...] sebagai markup agar teks tidak hilang
+            omit_repeated_times=False,
+            keywords=[]
         )
         rich_handler.setLevel(logging.INFO)
         

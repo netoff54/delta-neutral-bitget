@@ -203,64 +203,68 @@ class AutoRebalancer:
                 days_held = holding_hours / 24.0
                 days_left = max(0.0, (deadline_hours - holding_hours) / 24.0)
 
-                # Syarat 1: Minimum holding time awal (minimal 16 jam untuk stabilitas awal)
+                # Syarat 1: Cek apakah koin aktif saat ini masih mencetak target >= 2.5% per minggu
+                # Jika koin aktif masih sangat bagus (>= 0.04% per 4h atau >= 0.09% per 8h), BIARKAN BERJALAN (HOLD)
+                curr_rate = getattr(pos, "last_funding_rate", 0.0)
+                int_hours = getattr(pos, "funding_interval_hours", 8)
+                daily_cycles = 24.0 / max(1, int_hours)
+                est_weekly_yield = (curr_rate * daily_cycles * 7.0) * 100.0
+
+                is_winner_running = (curr_rate >= 0.0004 if int_hours <= 4 else curr_rate >= 0.0009)
+                if is_winner_running and holding_hours < deadline_hours:
+                    log.info(
+                        f"💎 [Pemenang Berjalan (Hold)] {pos.base_asset}: Funding Rate masih sangat tinggi "
+                        f"({curr_rate * 100:.4f}%/{int_hours}h | Proyeksi Mingguan: {est_weekly_yield:.2f}% >= 2.50%). "
+                        f"Tidak perlu rotasi, biarkan bunga terus menggunung tanpa terkena potongan fee baru!"
+                    )
+                    continue
+
+                # Syarat 2: Minimum holding time awal untuk meredam churn (minimal 4 jam / 1 siklus)
                 if holding_hours < settings.MIN_HOLDING_HOURS_BEFORE_ROTATION:
                     log.info(
-                        f"⏳ [Rotasi Ditunda] {pos.base_asset}: Baru {holding_hours:.1f} jam "
-                        f"(Minimum: {settings.MIN_HOLDING_HOURS_BEFORE_ROTATION}h)"
+                        f"⏳ [Rotasi Ditunda] {pos.base_asset}: Baru berjalan {holding_hours:.1f} jam "
+                        f"(Minimum stabilitas: {settings.MIN_HOLDING_HOURS_BEFORE_ROTATION}h)"
                     )
                     continue
 
-                # Syarat 2: WAJIB SUDAH BEP MUTLAK (Net PnL > 0)
-                # Menutup 100% dari 4 biaya transaksi: Beli Spot + Jual Spot + Buka Perp + Tutup Perp!
-                if not pos.is_bep_reached or pos.net_pnl_usdt <= 0.0:
+                # Syarat 3: WAJIB SUDAH BEP MUTLAK (Ground-Truth Portofolio Bitget & Posisi)
+                # Menutup 100% dari seluruh 4 biaya transaksi: Beli Spot + Jual Spot + Buka Perp + Tutup Perp!
+                is_port_bep = getattr(pos, "portfolio_bep_reached", False)
+                port_net_pnl = getattr(pos, "portfolio_net_pnl_usdt", pos.net_pnl_usdt)
+
+                if (not pos.is_bep_reached or pos.net_pnl_usdt <= 0.0) or (not is_port_bep and port_net_pnl < 0.0):
                     log.info(
-                        f"⏳ [Rotasi Ditunda] {pos.base_asset} BELUM BEP "
-                        f"(Net PnL: ${pos.net_pnl_usdt:+.4f} | Real Funding: +${pos.realized_funding_usdt:.4f}). "
-                        f"Menunggu akumulasi funding fee menutup seluruh 4 biaya beli & jual spot & future sebelum rotasi."
+                        f"⏳ [Rotasi Ditunda] {pos.base_asset} BELUM BEP: "
+                        f"Posisi Net PnL: ${pos.net_pnl_usdt:+.4f} USDT | Portofolio Bitget Net: ${port_net_pnl:+.4f} USDT | "
+                        f"Real Funding: +${pos.realized_funding_usdt:.4f} USDT. "
+                        f"Menolak rotasi sukarela demi melindungi modal awal dari kerugian fee bursa."
                     )
                     continue
 
-                # Syarat 3: SURPLUS 5% BEP (SEBELUM 1 BULAN) & WAJIB MINIMAL 1% SURPLUS BEP (SETELAH 1 BULAN)
-                if not is_deadline_passed:
-                    # Masih dalam waktu 1 bulan: WAJIB surplus 5% dari nilai BEP portofolio
-                    if pos.net_pnl_usdt < min_profit_5pct:
-                        log.info(
-                            f"⏳ [Rotasi Ditunda] {pos.base_asset}: Belum mencapai target surplus 5% dari nilai BEP "
-                            f"(${min_profit_5pct:.2f} USDT pada modal ${position_bep_capital:.2f}). "
-                            f"Surplus saat ini: +${pos.net_pnl_usdt:.4f} USDT ({profit_pct_now:+.2f}% / target +{surplus_5pct_target*100:.1f}%). "
-                            f"Tenggat 1 bulan tersisa: {days_left:.1f} hari ({holding_hours:.1f}/{deadline_hours:.0f}h). "
-                            f"Tetap hold agar bunga terus membesar!"
-                        )
-                        continue
-                    else:
-                        log.info(
-                            f"🎯 [Target Surplus 5% Tercapai!] {pos.base_asset}: Berhasil mencapai profit +${pos.net_pnl_usdt:.4f} USDT "
-                            f"({profit_pct_now:+.2f}% >= target 5.0% dari nilai BEP ${position_bep_capital:.2f}) dalam {days_held:.1f} hari. "
-                            f"Siap dievaluasi untuk rotasi!"
-                        )
-                else:
-                    # Sudah melewati tenggat 1 bulan: TETAP WAJIB SURPLUS MINIMAL 1% DARI NILAI BEP
-                    if pos.net_pnl_usdt < min_profit_1pct:
-                        log.info(
-                            f"⏳ [Rotasi Ditunda - Lewat 1 Bulan] {pos.base_asset}: Telah di-hold {days_held:.1f} hari, "
-                            f"namun belum mencapai syarat surplus minimal 1% dari nilai BEP (${min_profit_1pct:.2f} USDT). "
-                            f"Surplus saat ini: +${pos.net_pnl_usdt:.4f} USDT ({profit_pct_now:+.2f}% / target minimal +{surplus_1pct_target*100:.1f}%). "
-                            f"Tetap hold sampai minimal menghasilkan profit 1% di atas seluruh biaya transaksi!"
-                        )
-                        continue
-                    else:
-                        log.info(
-                            f"⏰ [Tenggat 1 Bulan + Surplus 1% Terpenuhi] {pos.base_asset}: Telah di-hold {days_held:.1f} hari "
-                            f"dan memenuhi syarat surplus minimal 1% (+${pos.net_pnl_usdt:.4f} USDT >= ${min_profit_1pct:.2f} USDT). "
-                            f"Membuka izin rotasi ke taker baru berkinerja tinggi agar modal terus berkembang!"
-                        )
+                # Syarat 4: SURPLUS PROFIT BERSIH DI ATAS BEP
+                # Untuk kelincahan target 2.5% mingguan, cukup surplus 0.3% modal di atas BEP
+                target_surplus_pct = surplus_1pct_target if is_deadline_passed else surplus_5pct_target
+                min_required_profit = round(position_bep_capital * target_surplus_pct, 4)
 
-                # Syarat 4: Cek konsistensi koin baru harus > 75%
+                if pos.net_pnl_usdt < min_required_profit:
+                    log.info(
+                        f"⏳ [Rotasi Ditunda] {pos.base_asset}: Sudah BEP tetapi belum mencapai surplus profit "
+                        f"(Saat ini: +${pos.net_pnl_usdt:.4f} USDT / Target: +${min_required_profit:.4f} USDT [{target_surplus_pct*100:.2f}%]). "
+                        f"Tahan posisi agar keuntungan bersih terkumpul sebelum berpindah koin."
+                    )
+                    continue
+                else:
+                    log.info(
+                        f"🎯 [Target Surplus Terpenuhi] {pos.base_asset}: Berhasil mengantongi profit bersih "
+                        f"+${pos.net_pnl_usdt:.4f} USDT ({profit_pct_now:+.2f}% di atas seluruh fee transaksi). "
+                        f"Koin aktif melambat ({curr_rate*100:.4f}%), siap dievaluasi untuk rotasi!"
+                    )
+
+                # Syarat 5: Cek konsistensi koin baru harus stabil (> 75%)
                 if best_new_opp.consistency_score_percent < 75.0:
                     log.info(
-                        f"⚠️ [Rotasi Ditunda] Kandidat {best_new_opp.base_asset} konsistensinya kurang "
-                        f"({best_new_opp.consistency_score_percent:.1f}% < 75%). Menunggu koin lebih stabil."
+                        f"⚠️ [Rotasi Ditunda] Kandidat koin baru {best_new_opp.base_asset} konsistensinya kurang "
+                        f"({best_new_opp.consistency_score_percent:.1f}% < 75%). Menunggu koin yang lebih stabil."
                     )
                     continue
 

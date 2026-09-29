@@ -38,73 +38,93 @@ class CompoundingManager:
     def __init__(self, state_file: str = "data/compounding_state.json"):
         self.state_path = Path(state_file)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        # Seed kapital 0 → akan diisi dari saldo REAL Bitget saat pertama kali scan
-        self.initial_seed: float = 0.0
+        # Modal Pokok Baseline: Ditetapkan 64.0 USDT sesuai setoran awal user
+        default_seed = float(getattr(settings, "INITIAL_SEED_CAPITAL_USDT", 64.0) or 64.0)
+        self.initial_seed: float = default_seed
         self.total_profit_compounded: float = 0.0
-        self.current_capital: float = 0.0
+        self.current_capital: float = default_seed
         self.events: List[HarvestEvent] = []
         self.load_state()
 
     def load_state(self):
         """Memuat riwayat compounding dari disk."""
+        default_seed = float(getattr(settings, "INITIAL_SEED_CAPITAL_USDT", 64.0) or 64.0)
         if not self.state_path.exists():
-            # File belum ada → akan di-sync dari saldo REAL Bitget saat pertama berjalan
-            self.current_capital = 0.0
+            # File belum ada -> inisialisasi baseline 64.0 USDT
+            self.initial_seed = default_seed
+            self.current_capital = default_seed
             self.total_profit_compounded = 0.0
             self.events = []
+            self.save_state()
+            log.info(f"[CompoundingManager] 💰 Baseline Modal Pokok diset: ${self.initial_seed:.2f} USDT (Default Setoran User)")
             return
 
         try:
             with open(self.state_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 saved_seed = float(data.get("initial_seed_capital", 0.0))
-                self.initial_seed = saved_seed
+                # Jika saved_seed 0, gunakan default 64.0 USDT
+                self.initial_seed = saved_seed if saved_seed > 0 else default_seed
                 self.total_profit_compounded = float(data.get("total_profit_compounded", 0.0))
                 self.current_capital = round(self.initial_seed + self.total_profit_compounded, 4)
                 self.events = [HarvestEvent.model_validate(e) for e in data.get("events", [])]
-            if self.initial_seed > 0:
-                log.info(
-                    f"[CompoundingManager] Modal Ter-Compound: ${self.current_capital:.4f} USDT "
-                    f"(Modal Pokok Real: ${self.initial_seed:.2f} + Profit Diputar: ${self.total_profit_compounded:.4f})"
-                )
-            else:
-                log.info("[CompoundingManager] Menunggu sinkronisasi saldo real dari Bitget...")
+            log.info(
+                f"[CompoundingManager] 💰 Baseline Modal Pokok Real: ${self.initial_seed:.2f} USDT | "
+                f"Profit Ter-Compound: +${self.total_profit_compounded:.4f} USDT | Total: ${self.current_capital:.4f} USDT"
+            )
         except Exception as e:
             log.error(f"Gagal memuat compounding state: {e}")
-            self.current_capital = 0.0
+            self.initial_seed = default_seed
+            self.current_capital = default_seed
             self.total_profit_compounded = 0.0
 
     def sync_from_real_balance(self, real_liquid_usdt: float):
         """
-        Sinkronisasi modal pokok dari saldo REAL Bitget.
-        Dipanggil setiap siklus utama agar modal selalu mencerminkan saldo aktual.
-        TIDAK PERNAH menggunakan angka fiktif/statis/mock.
+        Sinkronisasi modal pokok dari saldo REAL Bitget dan deteksi setoran saldo baru (deposit).
+        Jika user sewaktu-waktu menambah modal di Bitget, modal pokok disesuaikan otomatis.
         """
         if real_liquid_usdt <= 0:
             return
+
         if self.initial_seed <= 0:
-            # Pertama kali: set seed dari saldo real
             self.initial_seed = round(real_liquid_usdt, 4)
             self.current_capital = round(self.initial_seed + self.total_profit_compounded, 4)
             self.save_state()
+            return
+
+        # Deteksi deposit baru: jika saldo real melebihi (baseline modal pokok + profit yang dipanen) lebih dari 1.0 USDT
+        expected_total = self.initial_seed + self.total_profit_compounded
+        if real_liquid_usdt > expected_total + 1.0:
+            deposit_amount = round(real_liquid_usdt - expected_total, 4)
+            old_seed = self.initial_seed
+            self.initial_seed = round(self.initial_seed + deposit_amount, 4)
+            self.current_capital = round(self.initial_seed + self.total_profit_compounded, 4)
+            self.save_state()
             log.info(
-                f"[CompoundingManager] 🔗 Modal pokok diinisialisasi dari saldo REAL Bitget: "
-                f"${self.initial_seed:.4f} USDT (Total Modal Aktif: ${self.current_capital:.4f} USDT)"
+                f"💰 [Deposit Terdeteksi] Terdeteksi penambahan saldo di Bitget: +${deposit_amount:.2f} USDT!\n"
+                f"   -> Baseline Modal Pokok disesuaikan: ${old_seed:.2f} → ${self.initial_seed:.2f} USDT\n"
+                f"   -> Total Modal Aktif Terbaru: ${self.current_capital:.2f} USDT"
             )
-        else:
-            # Siklus berikutnya: perbarui modal aktif jika saldo real > modal ter-compound
-            # (misalnya user deposit lebih banyak atau ada peningkatan dari spot/futures)
-            real_total = real_liquid_usdt + self.total_profit_compounded
-            if real_liquid_usdt > self.initial_seed * 1.01:  # Ada kenaikan > 1%
-                old_seed = self.initial_seed
-                self.initial_seed = round(real_liquid_usdt, 4)
-                self.current_capital = round(self.initial_seed + self.total_profit_compounded, 4)
-                self.save_state()
-                log.info(
-                    f"[CompoundingManager] 📈 Modal pokok diperbarui dari saldo real: "
-                    f"${old_seed:.4f} → ${self.initial_seed:.4f} USDT "
-                    f"(Modal Aktif Total: ${self.current_capital:.4f} USDT)"
-                )
+
+    def get_portfolio_bep_status(self, current_trading_equity: float, est_exit_fees: float = 0.0) -> Dict[str, Any]:
+        """
+        Evaluasi status BEP portofolio nyata dari akun Bitget vs modal awal baseline ($64.0 + deposit baru).
+        Menghitung ekuitas bersih setelah dikurangi seluruh estimasi biaya exit di masa depan.
+        """
+        baseline = self.initial_seed if self.initial_seed > 0 else 64.0
+        net_equity_after_exit = round(max(0.0, current_trading_equity - est_exit_fees), 4)
+        net_pnl_usdt = round(net_equity_after_exit - baseline, 4)
+        is_bep = (net_pnl_usdt >= 0.0)
+        profit_pct = round((net_pnl_usdt / baseline * 100.0), 2) if baseline > 0 else 0.0
+        return {
+            "baseline_capital": baseline,
+            "current_trading_equity": current_trading_equity,
+            "est_exit_fees": est_exit_fees,
+            "net_equity_after_exit": net_equity_after_exit,
+            "net_pnl_usdt": net_pnl_usdt,
+            "profit_percent": profit_pct,
+            "is_bep": is_bep
+        }
 
 
     def save_state(self):
