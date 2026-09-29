@@ -232,157 +232,114 @@ def display_pnl_timeframes():
     except Exception as e:
         log.debug(f"PnL timeframe display notice: {e}")
 
-def display_opportunities(opportunities, top_n: int = 10):
-    """Menampilkan tabel hasil pemindaian peluang dengan analisis kuantitatif 120 hari (4 bulan) dari Bitget & biaya taker."""
-    table = Table(
-        title=f"Hasil Analisis Pasar & Prediksi Funding Rate (Top {top_n} Peluang - Bitget 120D / 4 Bulan Data)",
-        box=box.ROUNDED,
-        header_style="bold magenta",
-        expand=False
-    )
-
-    table.add_column("Koin", style="cyan", justify="left", no_wrap=True)
-    table.add_column("Int", style="magenta", justify="center", no_wrap=True)
-    table.add_column("Rate/Siklus", style="green", justify="right", no_wrap=True)
-    table.add_column("Next Rate", style="bright_green", justify="right", no_wrap=True)
-    table.add_column("Konsistensi", style="yellow", justify="right", no_wrap=True)
-    table.add_column("120D APY", style="bold green", justify="right", no_wrap=True)
-    table.add_column("120D Flip", style="bright_white", justify="center", no_wrap=True)
-    table.add_column("Taker Impas", style="bright_yellow", justify="right", no_wrap=True)
-    table.add_column("Net APY", style="bold green", justify="right", no_wrap=True)
-    table.add_column("Skor", style="bold cyan", justify="right", no_wrap=True)
-    table.add_column("Status / Kelayakan", justify="left", no_wrap=True)
-
-    for opp in opportunities[:top_n]:
-        if opp.is_eligible:
-            status_text = "[bold green][OK] LAYAK[/bold green]"
-        else:
-            reason = opp.rejection_reason or "Tidak lolos"
-            if "Modal" in reason and "Min Capital" in reason:
-                status_text = "[dim red][X] Min Cap ($10)[/dim red]"
-            elif "Nominal kaki" in reason or "minimal order" in reason:
-                status_text = "[dim red][X] Min Order[/dim red]"
-            elif "Volume 24h" in reason:
-                status_text = "[dim red][X] Vol Rendah[/dim red]"
-            elif "Waktu impas" in reason:
-                status_text = "[dim red][X] Impas > 72h[/dim red]"
-            elif "Net APY" in reason:
-                status_text = f"[dim red][X] APY < {settings.MIN_NET_APY_PERCENT:.0f}%[/dim red]"
-            elif "Funding rate bernilai negatif" in reason:
-                status_text = "[dim red][X] Rate Negatif[/dim red]"
-            else:
-                status_text = f"[dim red][X] {reason[:18]}[/dim red]"
-
-        stats = opp.historical_120d_stats or opp.historical_60d_stats or opp.historical_30d_stats or opp.historical_7d_stats
-        y120d_str = f"{stats.one_twenty_day_apy_pct:+.1f}%" if stats and stats.sample_count > 0 else (f"{stats.sixty_day_apy_pct:+.1f}%" if stats else "[dim]-[/dim]")
-        flip_count = getattr(stats, "one_twenty_day_flip_count", getattr(stats, "sixty_day_flip_count", getattr(stats, "thirty_day_flip_count", 0))) if stats else 0
-        flip_str = f"[green]{flip_count}x[/green]" if stats and flip_count == 0 else (f"[red]{flip_count}x[/red]" if stats else "[dim]-[/dim]")
-        taker_be_str = f"{stats.taker_fee_recovery_hours:.1f}h" if stats and stats.taker_fee_recovery_hours < 999 else f"{opp.break_even_hours:.1f}h"
-        consistency_str = f"{opp.consistency_score_percent:.1f}%" if opp.consistency_score_percent < 99.99 else "100%"
-
-        table.add_row(
-            opp.base_asset,
-            f"{opp.funding_interval_hours}h",
-            f"{opp.current_funding_rate * 100:.4f}%",
-            f"{opp.predicted_next_funding_rate * 100:.4f}%",
-            consistency_str,
-            y120d_str,
-            flip_str,
-            taker_be_str,
-            f"{opp.net_apy_percent:.1f}%",
-            f"{opp.composite_performance_score:.1f}",
-            status_text
-        )
-
-    console.print(table)
-
-def display_active_positions():
-    """Menampilkan tabel posisi aktif saat ini dengan pemantauan riil Funding Fee, Net PnL, dan status BEP."""
-    active_positions = position_manager.get_active_positions()
-    if not active_positions:
-        console.print("[italic dim]Belum ada posisi Delta-Neutral yang aktif saat ini.[/italic dim]\n")
+def display_opportunities(opportunities, top_n: int = 5):
+    """Menampilkan tabel hasil ranking koin terbaik Bitget dengan proyeksi mingguan & waktu menuju target."""
+    if not opportunities:
         return
 
-    table = Table(
-        title=f"Posisi Delta-Neutral Aktif ({len(active_positions)}) - Status BEP & Net PnL Riil",
-        box=box.ROUNDED,
-        header_style="bold cyan",
-        expand=False
-    )
+    # 1. Format Tabel Ranking Koin Bersih & Rapi untuk Log Cloud Render
+    ranking_lines = [
+        "\n========================== RANKING KOIN TERBAIK (BITGET LIVE) ==========================",
+        f"{'Rank':<5} | {'Koin':<10} | {'Interval':<8} | {'Rate/Siklus':<11} | {'Proyeksi 1W':<12} | {'Jam BEP':<9} | {'Waktu ke 2.5%':<14} | {'Status':<10}",
+        "----------------------------------------------------------------------------------------"
+    ]
+    for idx, opp in enumerate(opportunities[:top_n], 1):
+        cycles_day = 24.0 / max(1, opp.funding_interval_hours)
+        weekly_gross = (opp.current_funding_rate * cycles_day * 7.0) * 100.0
+        
+        # Hitung waktu menuju target 2.5% mingguan
+        rate_per_hour = (opp.current_funding_rate * 100.0) / max(1, opp.funding_interval_hours)
+        hours_to_2_5 = round(2.5 / rate_per_hour, 1) if rate_per_hour > 0 else 999.0
+        days_to_2_5 = round(hours_to_2_5 / 24.0, 1)
+        time_to_target_str = f"{days_to_2_5}d ({hours_to_2_5:.0f}h)" if hours_to_2_5 < 999 else "-"
 
-    table.add_column("Koin", style="bold yellow", justify="left")
-    table.add_column("Nominal", style="white", justify="right")
-    table.add_column("Spot Beli/Kini", style="green", justify="right")
-    table.add_column("Perp Jual/Kini", style="magenta", justify="right")
-    table.add_column("Panen", style="bold green", justify="right")
-    table.add_column("uPnL", style="white", justify="right")
-    table.add_column("Net PnL", style="bold white", justify="right")
-    table.add_column("Status BEP", justify="center")
-    table.add_column("MMR Bitget", style="bold yellow", justify="right")
-    table.add_column("ROE Futures", style="bold cyan", justify="right")
-    table.add_column("Durasi", style="cyan", justify="right")
+        bep_str = f"{opp.break_even_hours:.1f}h"
+        status_lbl = "LAYAK" if opp.is_eligible else "HOLD/FILTER"
+
+        ranking_lines.append(
+            f"#{idx:<4} | {opp.base_asset:<10} | {opp.funding_interval_hours}h{'':<6} | {opp.current_funding_rate*100:>8.4f}%  | {weekly_gross:>9.2f}%   | {bep_str:>7} | {time_to_target_str:>14} | {status_lbl:<10}"
+        )
+    ranking_lines.append("========================================================================================")
+    log.info("\n".join(ranking_lines))
+
+def display_active_positions():
+    """Menampilkan telemetri portofolio terpusat: status BEP riil, estimasi kapan BEP, progres 2.5% mingguan, dan posisi aktif."""
+    active_positions = position_manager.get_active_positions()
+    if not active_positions:
+        log.info("📊 [Portofolio] Belum ada posisi Delta-Neutral yang aktif saat ini. Modal cair siap dialokasikan.")
+        return
 
     from utils.interval_helper import safe_hours_passed
 
     for pos in active_positions:
-        pnl_color = "green" if pos.net_pnl_usdt >= 0 else "red"
-        unreal_color = "green" if pos.unrealized_pnl_usdt >= 0 else "yellow"
-        bep_badge = "[bold green]BEP Tercapai[/bold green]" if pos.is_bep_reached else f"[bold yellow]Menuju BEP ({pos.net_pnl_usdt:+.4f})[/bold yellow]"
-        bep_text = "BEP Tercapai" if pos.is_bep_reached else f"Menuju BEP ({pos.net_pnl_usdt:+.4f})"
         holding_h = safe_hours_passed(pos.entry_time) if hasattr(pos, "entry_time") else 0.0
-
-        margin_color = "red" if pos.current_margin_ratio >= 0.80 else ("yellow" if pos.current_margin_ratio >= 0.50 else "green")
-        margin_str = f"[{margin_color}]{pos.current_margin_ratio:.1%} MMR[/{margin_color}]"
-
+        spot_nominal = getattr(pos.spot_leg, "nominal_usdt", 0.0) or (pos.spot_leg.amount * pos.spot_leg.entry_price)
         roe_val = getattr(pos, "current_roe_percent", 0.0)
-        roe_color = "red" if roe_val <= -50.0 else ("yellow" if roe_val < 0 else "green")
-        roe_str = f"[{roe_color}]{roe_val:+.2f}%[/{roe_color}]"
 
-        port_equity = getattr(pos, "portfolio_equity_now", 0.0)
+        # Baseline Modal Awal ($64.0 default) & Saldo Ekuitas Riil Bitget
+        baseline = compounding_manager.initial_seed if compounding_manager.initial_seed > 0 else 64.0
+        port_equity = getattr(pos, "portfolio_equity_now", 0.0) or (spot_nominal + spot_nominal)
         port_net = getattr(pos, "portfolio_net_pnl_usdt", pos.net_pnl_usdt)
-        is_port_bep = getattr(pos, "portfolio_bep_reached", False)
-        port_bep_badge = "BEP TERCAPAI (Untung Bersih)" if is_port_bep else f"Menuju BEP ({port_net:+.4f} USDT)"
+        is_port_bep = getattr(pos, "portfolio_bep_reached", False) or (port_net >= 0.0)
 
-        # Hitung live basis spread
+        # 1. Sekarang Udah Berapa Persen vs Modal Awal $64
+        current_pct_vs_baseline = (port_net / baseline * 100.0) if baseline > 0 else 0.0
+
+        # 2. Estimasi Kapan Nyampe BEP
+        rate_per_hour_usdt = 0.0
+        if pos.last_funding_rate > 0 and pos.spot_leg.nominal_usdt > 0:
+            rate_per_hour_usdt = (pos.last_funding_rate * pos.spot_leg.nominal_usdt) / max(1, pos.funding_interval_hours)
+
+        if is_port_bep:
+            kapan_bep_str = "✅ SUDAH BEP TERCAPAI (Semua Fee Masuk & Keluar Telah Lunas Tercover)"
+        elif rate_per_hour_usdt > 0 and port_net < 0:
+            hours_to_bep = abs(port_net) / rate_per_hour_usdt
+            kapan_bep_str = f"⏳ Estimasi ~{hours_to_bep:.1f} jam lagi (Sisa selisih: ${abs(port_net):.4f} USDT)"
+        else:
+            kapan_bep_str = f"⏳ Menuju BEP (Sisa selisih: ${abs(port_net):.4f} USDT, menunggu settlement funding berikutnya)"
+
+        # 3. Estimasi Kapan Nyampe 2.5% per Minggu
+        target_weekly_profit_usdt = round(baseline * (settings.TARGET_WEEKLY_NET_YIELD_PERCENT / 100.0), 2)
+        progress_to_target_pct = (port_net / target_weekly_profit_usdt * 100.0) if target_weekly_profit_usdt > 0 and port_net > 0 else 0.0
+        profit_gap_usdt = max(0.0, target_weekly_profit_usdt - port_net)
+
+        if port_net >= target_weekly_profit_usdt:
+            kapan_target_str = "🎉 TARGET 2.5% MINGGUAN TELAH TERCAPAI LENGKAP!"
+        elif rate_per_hour_usdt > 0:
+            hours_to_target = profit_gap_usdt / rate_per_hour_usdt
+            days_to_target = hours_to_target / 24.0
+            kapan_target_str = f"⏳ Estimasi ~{days_to_target:.1f} hari ({hours_to_target:.0f} jam) lagi pada rate saat ini"
+        else:
+            kapan_target_str = "⏳ Mengakumulasi bunga settlement (Target: +$1.60 USDT per minggu)"
+
+        # 4. Basis Spread Live
         basis_spread = ((pos.perp_leg.current_price - pos.spot_leg.current_price) / pos.spot_leg.current_price * 100.0) if pos.spot_leg.current_price > 0 else 0.0
-        spread_status = "POSITIF" if basis_spread >= 0 else "NEGATIF"
+        spread_status = "POSITIF (AMAN)" if basis_spread >= 0 else "NEGATIF (CONVERGENCE IN PROGRESS)"
 
-        # Log format multi-line yang sangat jelas, rapi, dan TIDAK AKAN PERNAH TERPOTONG di viewer Render
+        # Output Log Portofolio Terpusat yang Jelas & Tidak Terpotong di Render
         log.info(
             f"\n"
-            f"================== TELEMETRI DELTA-NEUTRAL REAL-TIME (BITGET) ==================\n"
+            f"================== PORTOFOLIO INTELLIGENCE & TELEMETRI DELTA-NEUTRAL ==================\n"
             f" 🎯 Koin Target        : {pos.base_asset} (Fokus 1 Koin Penuh)\n"
-            f" 💰 Modal Awal User    : ${compounding_manager.initial_seed:.2f} USDT (Baseline Deposit)\n"
-            f" 🏦 Saldo Ekuitas Bitget: ${port_equity:.2f} USDT (Ground-Truth Riil Akun)\n"
-            f" 📊 Status BEP Akun    : {port_bep_badge}\n"
-            f" 📈 Net PnL Portofolio : ${port_net:+.4f} USDT (Bersih setelah Fee Keluar)\n"
-            f" --------------------------------------------------------------------------------\n"
+            f" 💰 Modal Awal User    : ${baseline:.2f} USDT (Baseline Deposit Setoran)\n"
+            f" 🏦 Saldo Ekuitas Bitget: ${port_equity:.2f} USDT (Ground-Truth Akun Riil)\n"
+            f" 📊 Status BEP Akun    : {'[SUDAH BEP]' if is_port_bep else '[MENUJU BEP]'} ({port_net:+.4f} USDT Net)\n"
+            f" ⏳ Kapan Nyampe BEP   : {kapan_bep_str}\n"
+            f" --------------------------------------------------------------------------------------\n"
+            f" 📈 Sekarang Berapa %  : {current_pct_vs_baseline:+.2f}% vs Modal Awal (Progress Mingguan: {progress_to_target_pct:.1f}%)\n"
+            f" 🎯 Target Mingguan    : +{settings.TARGET_WEEKLY_NET_YIELD_PERCENT:.2f}% Net / Minggu (~${target_weekly_profit_usdt:.2f} USDT)\n"
+            f" ⏱️ Waktu ke Target 2.5%: {kapan_target_str}\n"
+            f" --------------------------------------------------------------------------------------\n"
             f" 🟢 Kaki Spot (Beli)   : {pos.spot_leg.amount:.4f} {pos.base_asset} @ ${pos.spot_leg.entry_price:,.4f} -> Kini: ${pos.spot_leg.current_price:,.4f} (~${spot_nominal:.2f} USDT)\n"
             f" 🔴 Kaki Perp (Short)  : {pos.perp_leg.amount:.4f} {pos.base_asset} @ ${pos.perp_leg.entry_price:,.4f} -> Kini: ${pos.perp_leg.current_price:,.4f}\n"
             f" ⚖️ Basis Spread Live  : {basis_spread:+.3f}% ({spread_status})\n"
             f" 🌾 Funding Dipanen    : +${pos.cumulative_funding_received:.4f} USDT (Realized dari Ledger Bitget)\n"
             f" ⚡ Funding Rate Live  : {pos.last_funding_rate * 100:+.4f}% / {pos.funding_interval_hours}h\n"
-            f" 🎯 Target Mingguan    : 2.50% Net / Minggu\n"
-            f" 🛡️ MMR Bitget / ROE   : {pos.current_margin_ratio:.1%} MMR | ROE: {roe_val:+.2f}%\n"
+            f" 🛡️ MMR Bitget / ROE   : {pos.current_margin_ratio:.1%} MMR | ROE Futures: {roe_val:+.2f}%\n"
             f" ⏱️ Durasi Holding     : {holding_h:.1f} jam\n"
-            f"================================================================================="
+            f"========================================================================================"
         )
 
-        table.add_row(
-            pos.base_asset,
-            f"{pos.spot_leg.amount:.2f} (~${spot_nominal:.1f})",
-            f"${pos.spot_leg.entry_price:,.4f} / ${pos.spot_leg.current_price:,.4f}",
-            f"${pos.perp_leg.entry_price:,.4f} / ${pos.perp_leg.current_price:,.4f}",
-            f"+${pos.cumulative_funding_received:.4f}",
-            f"[{unreal_color}]${pos.unrealized_pnl_usdt:+.4f}[/{unreal_color}]",
-            f"[{pnl_color}]${pos.net_pnl_usdt:+.4f}[/{pnl_color}]",
-            bep_badge,
-            margin_str,
-            roe_str,
-            f"{holding_h:.1f} jam"
-        )
-
-    console.print(table)
 
 from core.database import db
 

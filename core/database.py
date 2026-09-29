@@ -40,12 +40,25 @@ class UnifiedDatabase:
             if self.db_url.startswith("postgres://"):
                 self.db_url = self.db_url.replace("postgres://", "postgresql://", 1)
             self.is_postgres = True
-            log.info("🌐 [Database] Terhubung ke Cloud PostgreSQL via DATABASE_URL (Data Abadi & Persisten).")
         else:
             self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
             log.info(f"💾 [Database] Menggunakan SQLite Lokal: {self.sqlite_path}")
 
-        self._init_db()
+        # Selalu inisialisasi schema SQLite lokal agar saat fallback tidak pernah terjadi 'no such table'
+        self._init_sqlite_fallback()
+        if self.is_postgres:
+            self._init_db()
+
+    def _init_sqlite_fallback(self):
+        """Memastikan database SQLite lokal memiliki schema 8 tabel lengkap sebagai fallback aman."""
+        try:
+            self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+            was_pg = self.is_postgres
+            self.is_postgres = False
+            self._init_db()
+            self.is_postgres = was_pg
+        except Exception as e:
+            log.debug(f"SQLite fallback schema init notice: {e}")
 
     @contextmanager
     def _get_connection(self):
