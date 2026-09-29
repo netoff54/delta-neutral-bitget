@@ -12,18 +12,29 @@ if sys.platform == "win32":
     except Exception:
         pass
 import os
-console_width = int(os.getenv("CONSOLE_WIDTH", "280"))
-console = Console(width=console_width, force_terminal=True, soft_wrap=True)
+console_width = min(110, int(os.getenv("CONSOLE_WIDTH", "105")))
+is_cloud = bool(os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT") or not sys.stdout.isatty())
+
+if is_cloud:
+    # Mode Cloud (Render/Railway): Hapus seluruh ANSI escape codes dan batasi lebar agar tidak di-wrap oleh browser
+    console = Console(width=console_width, no_color=True, highlight=False, force_terminal=False, soft_wrap=True)
+else:
+    console = Console(width=console_width, force_terminal=True, soft_wrap=True)
+
+def print_clean_table(lines: list):
+    """Mencetak baris tabel presisi langsung ke stdout agar perataan kolom 100% sempurna tanpa indentasi atau wrapping."""
+    for line in lines:
+        print(line, flush=True)
 
 def setup_logger(name: str = "delta_neutral", log_file: str = "bot.log") -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
     
     if not logger.handlers:
-        # Rich Console Handler - Proteksi mutlak teks agar tidak ada yang terpotong di log cloud
+        # Rich Console Handler - Bersih tanpa prefix ganda di cloud logs
         rich_handler = RichHandler(
             console=console,
-            show_time=True,
+            show_time=not is_cloud,  # Cloud Render/Railway sudah memiliki timestamp otomatis
             show_path=False,
             rich_tracebacks=True,
             markup=False,  # Jangan interpretasikan tanda kurung siku [...] sebagai markup agar teks tidak hilang
