@@ -166,16 +166,21 @@ def display_pnl_timeframes():
         if not pnl_data:
             return
 
+        border = "+------------+----------------+----------------+--------------+-----------+---------------+-------------+--------------+"
+        header = "| TIMEFRAME  | MODAL AWAL     | MODAL KINI     | PNL (USDT)   | PNL (%)   | REAL FUNDING  | AVG/HARI    | ANNUALIZED   |"
+
         lines = [
-            "\n================== ANALISIS PNL PORTOFOLIO MULTI-TIMEFRAME (DATA REAL BITGET) ==================",
-            f"{'TIMEFRAME':<10} | {'MODAL AWAL':<14} | {'MODAL KINI':<14} | {'PNL (USDT)':<12} | {'PNL (%)':<9} | {'REAL FUNDING':<13} | {'AVG/HARI':<11} | {'ANNUALIZED':<10}",
-            "------------------------------------------------------------------------------------------------"
+            "\n" + border,
+            "|      📈 ANALISIS PNL PORTOFOLIO MULTI-TIMEFRAME (DATA REAL HISTORIS BITGET)                                       |",
+            border,
+            header,
+            border
         ]
 
         for label in ["1D", "1W", "1M", "2M", "4M", "1Y"]:
             data = pnl_data.get(label, {})
             if not data or not data.get("has_data", False):
-                lines.append(f"{label:<10} | {'Belum Ada Data':<14} | {'-':<14} | {'-':<12} | {'-':<9} | {'-':<13} | {'-':<11} | {'-':<10}")
+                lines.append(f"| {label:<10} | {'Belum Ada Data':<14} | {'-':<14} | {'-':<12} | {'-':<9} | {'-':<13} | {'-':<11} | {'-':<12} |")
             else:
                 start_eq = f"${data.get('start_equity_usdt', 0.0):,.2f}"
                 curr_eq = f"${data.get('current_equity_usdt', 0.0):,.2f}"
@@ -184,15 +189,15 @@ def display_pnl_timeframes():
                 fund_h = f"+${data.get('funding_harvested_usdt', 0.0):.4f}"
                 avg_d = f"${data.get('avg_daily_pnl_usdt', 0.0):+.4f}"
                 ann_y = f"{data.get('annualized_yield_pct', 0.0):+.1f}%"
-                lines.append(f"{label:<10} | {start_eq:<14} | {curr_eq:<14} | {pnl_u:<12} | {pnl_p:<9} | {fund_h:<13} | {avg_d:<11} | {ann_y:<10}")
+                lines.append(f"| {label:<10} | {start_eq:<14} | {curr_eq:<14} | {pnl_u:<12} | {pnl_p:<9} | {fund_h:<13} | {avg_d:<11} | {ann_y:<12} |")
 
         all_time = pnl_data.get("all_time", {})
         if all_time:
             curr_eq = f"${all_time.get('current_equity_usdt', 0.0):,.2f}"
             tot_fund = f"+${all_time.get('total_funding_harvested_usdt', 0.0):.4f}"
-            lines.append(f"{'ALL-TIME':<10} | {'-':<14} | {curr_eq:<14} | {'-':<12} | {'-':<9} | {tot_fund:<13} | {'-':<11} | {'-':<10}")
+            lines.append(f"| {'ALL-TIME':<10} | {'-':<14} | {curr_eq:<14} | {'-':<12} | {'-':<9} | {tot_fund:<13} | {'-':<11} | {'-':<12} |")
 
-        lines.append("================================================================================================")
+        lines.append(border)
         log.info("\n".join(lines))
     except Exception as e:
         log.debug(f"PnL timeframe display notice: {e}")
@@ -211,11 +216,15 @@ def display_opportunities(opportunities, top_n: int = 10):
         reverse=True
     )
 
+    border_line = "+------+----------+----------+-------------+--------------+----------+---------------+-----------------------+-------------------+-----------------------------------+"
+    header_line = "| RANK | KOIN     | INTERVAL | RATE/SIKLUS | PROYEKSI 1W  | JAM BEP  | WAKTU KE 2.5% | RIWAYAT FLIP (RENTANG)| STATUS KELAYAKAN  | ALASAN / CATATAN                  |"
+    
     ranking_lines = [
-        "\n========================== RANKING KOIN TERBAIK (BITGET LIVE) ==========================",
-        f"{'Rank':<5} | {'Koin':<10} | {'Interval':<8} | {'Rate/Siklus':<11} | {'Proyeksi 1W':<12} | {'Jam BEP':<9} | {'Waktu ke 2.5%':<14} | {'Status':<14}",
-        "----------------------------------------------------------------------------------------"
+        "\n" + border_line,
+        header_line,
+        border_line
     ]
+
     for idx, opp in enumerate(sorted_opps[:top_n], 1):
         cycles_day = 24.0 / max(1, opp.funding_interval_hours)
         weekly_gross = (opp.current_funding_rate * cycles_day * 7.0) * 100.0
@@ -228,24 +237,34 @@ def display_opportunities(opportunities, top_n: int = 10):
 
         bep_str = f"{opp.break_even_hours:.1f}h"
         
-        # Status penjelasan ringkas dan padat
+        # Riwayat flip dan rentang hari data dari stats 120d/60d
+        st = getattr(opp, "historical_120d_stats", None)
+        if st and st.sample_count > 0:
+            flips = st.negative_flip_count
+            days_data = round((st.sample_count * opp.funding_interval_hours) / 24.0, 0)
+            if flips == 0:
+                flip_str = f"0x Flip ({days_data:.0f}d BEBAS)"
+            else:
+                flip_str = f"{flips}x Flip ({days_data:.0f}d data)"
+        else:
+            flip_str = "0x Flip (Bebas)"
+
+        # Status Kelayakan & Catatan Jelas
         if opp.is_eligible:
             status_lbl = "LAYAK (AMAN)"
+            catatan = "Sesuai Standar Target 2.5%"
         else:
-            r_reason = (getattr(opp, "rejection_reason", "") or "").lower()
-            if "flip" in r_reason or "negatif" in r_reason:
-                status_lbl = "HOLD/FLIP"
-            elif "volume" in r_reason:
-                status_lbl = "HOLD/VOL-LOW"
-            elif "spread" in r_reason:
-                status_lbl = "HOLD/SPREAD"
+            status_lbl = "TIDAK LAYAK"
+            r_reason = (getattr(opp, "rejection_reason", "") or "")
+            if len(r_reason) > 33:
+                catatan = r_reason[:30] + "..."
             else:
-                status_lbl = "HOLD/FILTER"
+                catatan = r_reason if r_reason else "Difilter Keamanan"
 
         ranking_lines.append(
-            f"#{idx:<4} | {opp.base_asset:<10} | {opp.funding_interval_hours}h{'':<6} | {opp.current_funding_rate*100:>8.4f}%  | {weekly_gross:>9.2f}%   | {bep_str:>7} | {time_to_target_str:>14} | {status_lbl:<14}"
+            f"| #{idx:<4} | {opp.base_asset:<8} | {opp.funding_interval_hours}h{'':<6} | {opp.current_funding_rate*100:>10.4f}% | {weekly_gross:>11.2f}% | {bep_str:>8} | {time_to_target_str:>13} | {flip_str:<21} | {status_lbl:<17} | {catatan:<33} |"
         )
-    ranking_lines.append("========================================================================================")
+    ranking_lines.append(border_line)
     log.info("\n".join(ranking_lines))
 
 def display_active_positions():

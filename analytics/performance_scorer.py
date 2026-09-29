@@ -102,25 +102,27 @@ class PerformanceScorer:
         """
         cycles_per_day = 24.0 / max(1, funding_interval_hours)
 
-        # 1. Komponen Prediksi Yield Tahunan
+        # 1. Komponen Bunga Tertinggi / Yield Proyeksi (Bobot: 25%)
+        # Normalisasi yield tahunan (misal 50% APY -> 25 poin penuh)
         pred_annual_pct = predicted_next_rate * cycles_per_day * 365 * 100.0
-        score_pred = max(0.0, pred_annual_pct) * 0.35
+        score_yield_25 = min(25.0, max(0.0, (pred_annual_pct / 50.0) * 25.0))
 
-        # 2. Komponen Konsistensi Historis
+        # 2. Komponen BEP Tercepat (Bobot: 25%)
+        # BEP <= 8 jam mendapat poin penuh 25, di atas 48 jam mendekati 0
+        score_bep_25 = max(0.0, (48.0 - min(48.0, break_even_hours)) / 48.0) * 25.0
+
+        # 3. Komponen Konsistensi Positif & Bebas Flip Historis (Bobot: 30%)
+        # Konsistensi 100% -> 30 poin, <70% terpotong drastis
+        score_consistency_30 = (max(0.0, consistency_pct) / 100.0) * 30.0
+
+        # 4. Komponen Rata-rata Historis & Kestabilan (Bobot: 20%)
         hist_annual_pct = historical_mean * cycles_per_day * 365 * 100.0
-        score_hist = max(0.0, hist_annual_pct) * 0.25
+        score_hist_20 = min(20.0, max(0.0, (hist_annual_pct / 40.0) * 20.0))
 
-        # 3. Bobot Rasio Konsistensi Positif (0-100 poin)
-        score_consistency = (consistency_pct / 100.0) * 25.0
+        # Penalti Volatilitas/Standar Deviasi liar
+        vol_penalty = (std_rate * cycles_per_day * 365 * 100.0) * 0.10
 
-        # 4. Kecepatan Impas (Break-even speed)
-        # Impas < 24 jam mendapat poin penuh, > 72 jam terpotong
-        be_score = max(0.0, (72.0 - min(72.0, break_even_hours)) / 72.0) * 15.0
-
-        # 5. Penalti Volatilitas/Ketidakpastian (Std Dev tinggi = risiko tinggi)
-        vol_penalty = (std_rate * cycles_per_day * 365 * 100.0) * 0.15
-
-        composite_score = score_pred + score_hist + score_consistency + be_score - vol_penalty
+        composite_score = score_yield_25 + score_bep_25 + score_consistency_30 + score_hist_20 - vol_penalty
         return round(max(0.0, composite_score), 2)
 
 performance_scorer = PerformanceScorer()
