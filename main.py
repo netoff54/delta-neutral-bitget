@@ -163,87 +163,60 @@ def display_pnl_timeframes():
     """
     try:
         pnl_data = db.get_all_pnl_timeframes()
+        if not pnl_data:
+            return
 
-        table = Table(
-            title="📈 Analisis PnL Portofolio Multi-Timeframe (Data REAL Bitget)",
-            box=box.ROUNDED,
-            header_style="bold cyan",
-            expand=False
-        )
-        table.add_column("Timeframe", style="bold white", justify="center", no_wrap=True)
-        table.add_column("Modal Awal", style="yellow", justify="right", no_wrap=True)
-        table.add_column("Modal Kini", style="bold green", justify="right", no_wrap=True)
-        table.add_column("PnL (USDT)", justify="right", no_wrap=True)
-        table.add_column("PnL (%)", justify="right", no_wrap=True)
-        table.add_column("Funding Harvested", style="green", justify="right", no_wrap=True)
-        table.add_column("Avg/Hari", style="cyan", justify="right", no_wrap=True)
-        table.add_column("Annualized", style="bold magenta", justify="right", no_wrap=True)
+        lines = [
+            "\n================== ANALISIS PNL PORTOFOLIO MULTI-TIMEFRAME (DATA REAL BITGET) ==================",
+            f"{'TIMEFRAME':<10} | {'MODAL AWAL':<14} | {'MODAL KINI':<14} | {'PNL (USDT)':<12} | {'PNL (%)':<9} | {'REAL FUNDING':<13} | {'AVG/HARI':<11} | {'ANNUALIZED':<10}",
+            "------------------------------------------------------------------------------------------------"
+        ]
 
         for label in ["1D", "1W", "1M", "2M", "4M", "1Y"]:
             data = pnl_data.get(label, {})
-            if not data:
-                continue
-
-            has_data = data.get("has_data", False)
-            pnl_usdt = data.get("pnl_usdt", 0.0)
-            pnl_pct = data.get("pnl_pct", 0.0)
-
-            pnl_color = "green" if pnl_usdt >= 0 else "red"
-            pct_color = "green" if pnl_pct >= 0 else "red"
-
-            if not has_data:
-                table.add_row(
-                    label,
-                    "[dim]Belum ada data[/dim]",
-                    "[dim]-[/dim]",
-                    "[dim]-[/dim]",
-                    "[dim]-[/dim]",
-                    "[dim]-[/dim]",
-                    "[dim]-[/dim]",
-                    "[dim]-[/dim]"
-                )
+            if not data or not data.get("has_data", False):
+                lines.append(f"{label:<10} | {'Belum Ada Data':<14} | {'-':<14} | {'-':<12} | {'-':<9} | {'-':<13} | {'-':<11} | {'-':<10}")
             else:
-                table.add_row(
-                    f"[bold]{label}[/bold]",
-                    f"${data.get('start_equity_usdt', 0.0):,.2f}",
-                    f"[bold green]${data.get('current_equity_usdt', 0.0):,.2f}[/bold green]",
-                    f"[{pnl_color}]${pnl_usdt:+.4f}[/{pnl_color}]",
-                    f"[{pct_color}]{pnl_pct:+.2f}%[/{pct_color}]",
-                    f"+${data.get('funding_harvested_usdt', 0.0):.4f}",
-                    f"${data.get('avg_daily_pnl_usdt', 0.0):+.4f}",
-                    f"[bold]{data.get('annualized_yield_pct', 0.0):+.1f}%[/bold]"
-                )
+                start_eq = f"${data.get('start_equity_usdt', 0.0):,.2f}"
+                curr_eq = f"${data.get('current_equity_usdt', 0.0):,.2f}"
+                pnl_u = f"${data.get('pnl_usdt', 0.0):+.4f}"
+                pnl_p = f"{data.get('pnl_pct', 0.0):+.2f}%"
+                fund_h = f"+${data.get('funding_harvested_usdt', 0.0):.4f}"
+                avg_d = f"${data.get('avg_daily_pnl_usdt', 0.0):+.4f}"
+                ann_y = f"{data.get('annualized_yield_pct', 0.0):+.1f}%"
+                lines.append(f"{label:<10} | {start_eq:<14} | {curr_eq:<14} | {pnl_u:<12} | {pnl_p:<9} | {fund_h:<13} | {avg_d:<11} | {ann_y:<10}")
 
-        # Row all-time
         all_time = pnl_data.get("all_time", {})
         if all_time:
-            table.add_row(
-                "[bold yellow]All Time[/bold yellow]",
-                "[dim]-[/dim]",
-                f"[bold green]${all_time.get('current_equity_usdt', 0.0):,.2f}[/bold green]",
-                "[dim]-[/dim]",
-                "[dim]-[/dim]",
-                f"[bold yellow]+${all_time.get('total_funding_harvested_usdt', 0.0):.4f}[/bold yellow]",
-                "[dim]-[/dim]",
-                "[dim]-[/dim]"
-            )
+            curr_eq = f"${all_time.get('current_equity_usdt', 0.0):,.2f}"
+            tot_fund = f"+${all_time.get('total_funding_harvested_usdt', 0.0):.4f}"
+            lines.append(f"{'ALL-TIME':<10} | {'-':<14} | {curr_eq:<14} | {'-':<12} | {'-':<9} | {tot_fund:<13} | {'-':<11} | {'-':<10}")
 
-        console.print(table)
+        lines.append("================================================================================================")
+        log.info("\n".join(lines))
     except Exception as e:
         log.debug(f"PnL timeframe display notice: {e}")
 
-def display_opportunities(opportunities, top_n: int = 5):
+def display_opportunities(opportunities, top_n: int = 10):
     """Menampilkan tabel hasil ranking koin terbaik Bitget dengan proyeksi mingguan & waktu menuju target."""
     if not opportunities:
         return
 
-    # 1. Format Tabel Ranking Koin Bersih & Rapi untuk Log Cloud Render
+    # Urutkan koin berdasarkan WAKTU KE 2.5% TERCEPAT (proyeksi yield mingguan tertinggi di paling atas)
+    sorted_opps = sorted(
+        opportunities,
+        key=lambda opp: (
+            (opp.current_funding_rate * (24.0 / max(1, opp.funding_interval_hours)) * 7.0)
+        ),
+        reverse=True
+    )
+
     ranking_lines = [
         "\n========================== RANKING KOIN TERBAIK (BITGET LIVE) ==========================",
-        f"{'Rank':<5} | {'Koin':<10} | {'Interval':<8} | {'Rate/Siklus':<11} | {'Proyeksi 1W':<12} | {'Jam BEP':<9} | {'Waktu ke 2.5%':<14} | {'Status':<10}",
+        f"{'Rank':<5} | {'Koin':<10} | {'Interval':<8} | {'Rate/Siklus':<11} | {'Proyeksi 1W':<12} | {'Jam BEP':<9} | {'Waktu ke 2.5%':<14} | {'Status':<14}",
         "----------------------------------------------------------------------------------------"
     ]
-    for idx, opp in enumerate(opportunities[:top_n], 1):
+    for idx, opp in enumerate(sorted_opps[:top_n], 1):
         cycles_day = 24.0 / max(1, opp.funding_interval_hours)
         weekly_gross = (opp.current_funding_rate * cycles_day * 7.0) * 100.0
         
@@ -254,10 +227,23 @@ def display_opportunities(opportunities, top_n: int = 5):
         time_to_target_str = f"{days_to_2_5}d ({hours_to_2_5:.0f}h)" if hours_to_2_5 < 999 else "-"
 
         bep_str = f"{opp.break_even_hours:.1f}h"
-        status_lbl = "LAYAK" if opp.is_eligible else "HOLD/FILTER"
+        
+        # Status penjelasan ringkas dan padat
+        if opp.is_eligible:
+            status_lbl = "LAYAK (AMAN)"
+        else:
+            r_reason = (getattr(opp, "rejection_reason", "") or "").lower()
+            if "flip" in r_reason or "negatif" in r_reason:
+                status_lbl = "HOLD/FLIP"
+            elif "volume" in r_reason:
+                status_lbl = "HOLD/VOL-LOW"
+            elif "spread" in r_reason:
+                status_lbl = "HOLD/SPREAD"
+            else:
+                status_lbl = "HOLD/FILTER"
 
         ranking_lines.append(
-            f"#{idx:<4} | {opp.base_asset:<10} | {opp.funding_interval_hours}h{'':<6} | {opp.current_funding_rate*100:>8.4f}%  | {weekly_gross:>9.2f}%   | {bep_str:>7} | {time_to_target_str:>14} | {status_lbl:<10}"
+            f"#{idx:<4} | {opp.base_asset:<10} | {opp.funding_interval_hours}h{'':<6} | {opp.current_funding_rate*100:>8.4f}%  | {weekly_gross:>9.2f}%   | {bep_str:>7} | {time_to_target_str:>14} | {status_lbl:<14}"
         )
     ranking_lines.append("========================================================================================")
     log.info("\n".join(ranking_lines))
@@ -494,7 +480,7 @@ async def self_ping_loop():
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        log.info(f"🏓 [Self-Ping] OK ({resp.status}) → {ping_url}")
+                        log.debug(f"🏓 [Self-Ping] OK ({resp.status}) → {ping_url}")
             except asyncio.CancelledError:
                 break
             except Exception as e:

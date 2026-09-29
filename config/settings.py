@@ -31,8 +31,8 @@ class BotSettings(BaseSettings):
     # Baseline Modal Awal: Ditetapkan $64.0 USDT (sesuai setoran user), akan otomatis menyesuaikan jika user menambah saldo
     INITIAL_SEED_CAPITAL_USDT: float = Field(default=64.0, description="Baseline modal awal pokok ($64.0 USDT default, auto-adjust saat ada deposit baru)")
     TOTAL_MAX_CAPITAL_USDT: Optional[float] = Field(default=None, description="Batas atas total modal (opsional)")
-    LEVERAGE: int = Field(default=1, ge=1, le=2, description="Futures short leverage (Maksimal 1x)")
-    MIN_24H_VOLUME_USDT: float = Field(default=100000.0, description="Minimum 24h volume for liquidity check ($100k)")
+    LEVERAGE: int = Field(default=1, ge=1, le=1, description="Futures short leverage terkunci mutlak 1x")
+    MIN_24H_VOLUME_USDT: float = Field(default=50000.0, description="Minimum 24h volume for liquidity check ($50k)")
 
     # Fee Structure
     SPOT_TAKER_FEE: float = Field(default=0.001, description="Spot taker fee rate (0.1%)")

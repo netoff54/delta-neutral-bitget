@@ -112,8 +112,8 @@ def test_database_multi_timeframe_includes_4m(temp_db):
     assert "1Y" in pnl_timeframes
     assert pnl_timeframes["4M"]["timeframe_days"] == 120
 
-def test_volume_threshold_100k():
-    assert settings.MIN_24H_VOLUME_USDT == 100000.0
+def test_volume_threshold_50k():
+    assert settings.MIN_24H_VOLUME_USDT == 50000.0
 
 @pytest.mark.asyncio
 async def test_gemini_brain_uses_120day_stats():

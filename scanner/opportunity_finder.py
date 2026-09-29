@@ -84,15 +84,9 @@ class OpportunityFinder:
             spot_bid = float(spot_ticker.get("bid") or spot_price)
             perp_ask = float(perp_ticker.get("ask") or perp_price)
 
-            if getattr(settings, "USE_MAKER_ORDERS", True):
-                maker_spread_pct = ((perp_ask - spot_bid) / spot_bid) * 100.0
-                # Jamin spread positif (Perp Ask >= Spot Bid)
-                if getattr(settings, "REQUIRE_POSITIVE_SPREAD", True):
-                    basis_spread_pct = max(0.0001, maker_spread_pct)
-                else:
-                    basis_spread_pct = maker_spread_pct
-            else:
-                basis_spread_pct = ((perp_price - spot_price) / spot_price) * 100.0
+            maker_spread_pct = ((perp_ask - spot_bid) / spot_bid) * 100.0 if spot_bid > 0 else 0.0
+            raw_spread_pct = ((perp_price - spot_price) / spot_price) * 100.0 if spot_price > 0 else 0.0
+            basis_spread_pct = maker_spread_pct if getattr(settings, "USE_MAKER_ORDERS", True) else raw_spread_pct
 
             # Next funding time & interval dinamis (1h, 4h, 8h)
             interval_hours = parse_interval_hours(fr_data.get("fundingInterval"), default=8)
@@ -104,13 +98,18 @@ class OpportunityFinder:
                 funding_rate=funding_rate,
                 nominal_value_usdt=target_nominal_usdt,
                 funding_interval_hours=interval_hours,
-                basis_spread_percent=basis_spread_pct,
+                basis_spread_percent=max(0.0001, basis_spread_pct),
                 is_maker=getattr(settings, "USE_MAKER_ORDERS", True)
             )
 
             # Cek likuiditas minimum
             is_eligible = eval_result["is_eligible"]
             rejection_reason = eval_result["rejection_reason"]
+
+            # Proteksi Modal: Tolak jika basis spread pasar bernilai negatif
+            if is_eligible and getattr(settings, "REQUIRE_POSITIVE_SPREAD", True) and basis_spread_pct < 0.0:
+                is_eligible = False
+                rejection_reason = f"Basis spread pasar negatif ({basis_spread_pct:+.3f}% < 0.0%)"
 
             # Cek apakah modal mencukupi batas minimum order exchange (Token size & USDT notional)
             effective_leverage = max(1, settings.LEVERAGE)
@@ -363,9 +362,9 @@ class OpportunityFinder:
         except Exception:
             pass
 
-        # Urutkan final: Mengutamakan yang Eligible dengan Composite Performance Score tertinggi
+        # Urutkan final: Mengutamakan yang Eligible dengan Net APY tertinggi (paling cepat mencapai target 2.5% mingguan)
         opportunities.sort(
-            key=lambda x: (x.is_eligible, x.composite_performance_score, x.net_apy_percent),
+            key=lambda x: (x.is_eligible, x.net_apy_percent, x.composite_performance_score),
             reverse=True
         )
         return opportunities

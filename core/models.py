@@ -128,7 +128,7 @@ class DeltaNeutralPosition(BaseModel):
     base_asset: str
     spot_leg: PositionLeg
     perp_leg: PositionLeg
-    leverage: int = 2
+    leverage: int = 1
     funding_interval_hours: int = 8
     
     entry_time: datetime = Field(default_factory=datetime.utcnow)

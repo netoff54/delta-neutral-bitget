@@ -290,6 +290,19 @@ class AutoRebalancer:
                     )
                     continue
 
+                # Syarat 7: JAMIN BASIS SPREAD EXIT AMAN (Spot Sell >= Perp Buy)
+                # Saat exit, jual Spot dan beli tutup Perp. Pastikan spread tidak minus agar modal utuh.
+                if getattr(settings, "REQUIRE_POSITIVE_SPREAD", True):
+                    live_spot_p = pos.spot_leg.current_price
+                    live_perp_p = pos.perp_leg.current_price
+                    exit_spread = ((live_spot_p - live_perp_p) / live_perp_p * 100.0) if live_perp_p > 0 else 0.0
+                    if exit_spread < -0.05:
+                        log.info(
+                            f"⏳ [Rotasi Ditunda] Basis spread exit {pos.base_asset} sedang negatif ({exit_spread:+.3f}%). "
+                            f"Menunggu konvergensi harga Spot >= Perp agar modal keluar tanpa tergerus spread."
+                        )
+                        continue
+
                 # Konfirmasi Kualitatif AI Gemini Brain
                 if settings.ENABLE_AI_BRAIN:
                     ai_approved = await gemini_brain.evaluate_rotation_candidate(
