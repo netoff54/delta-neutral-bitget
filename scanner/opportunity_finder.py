@@ -328,7 +328,9 @@ class OpportunityFinder:
                 std_rate=opp.historical_std_rate,
                 net_apy_percent=opp.net_apy_percent,
                 break_even_hours=opp.break_even_hours,
-                funding_interval_hours=opp.funding_interval_hours
+                funding_interval_hours=opp.funding_interval_hours,
+                basis_spread_percent=opp.basis_spread_percent,
+                volume_24h_usdt=opp.volume_24h_usdt
             )
 
             # Integrasikan skor kualitas historis 120 hari (Bobot: 50% jangka pendek + 50% kualitas 120 hari)

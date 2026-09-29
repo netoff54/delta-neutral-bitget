@@ -30,6 +30,7 @@ class OrderExecutor:
     ):
         self.client = client
         self.pos_mgr = pos_mgr
+        self._lock = asyncio.Lock()
 
     async def open_delta_neutral_position(
         self,

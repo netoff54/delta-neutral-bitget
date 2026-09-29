@@ -94,35 +94,39 @@ class PerformanceScorer:
         std_rate: float,
         net_apy_percent: float,
         break_even_hours: float,
-        funding_interval_hours: int = 8
+        funding_interval_hours: int = 8,
+        basis_spread_percent: float = 0.0,
+        volume_24h_usdt: float = 50000.0,
     ) -> float:
         """
-        Menghitung Skor Performa Komposit Kuantitatif (0 - 100+).
-        Disesuaikan secara dinamis untuk interval penyelesaian (misal 4h, 8h, 1h).
+        Menghitung Skor Performa Komposit Kuantitatif (Bobot 0 - 100):
+        - Bunga Tertinggi / Yield Mingguan: 25%
+        - Kecepatan BEP Tercepat: 25%
+        - Stabilitas Historis & Anti-Flip Negatif: 30%
+        - Kualitas Spread Masuk/Keluar & Likuiditas: 20%
         """
         cycles_per_day = 24.0 / max(1, funding_interval_hours)
+        weekly_yield_pct = (predicted_next_rate * cycles_per_day * 7.0) * 100.0
 
-        # 1. Komponen Bunga Tertinggi / Yield Proyeksi (Bobot: 25%)
-        # Normalisasi yield tahunan (misal 50% APY -> 25 poin penuh)
-        pred_annual_pct = predicted_next_rate * cycles_per_day * 365 * 100.0
-        score_yield_25 = min(25.0, max(0.0, (pred_annual_pct / 50.0) * 25.0))
+        # 1. Bobot 25%: Bunga Tertinggi / Yield Mingguan
+        # Benchmark target 2.5%/minggu = 25 poin penuh
+        score_yield = max(0.0, (weekly_yield_pct / 2.5) * 25.0)
 
-        # 2. Komponen BEP Tercepat (Bobot: 25%)
-        # BEP <= 8 jam mendapat poin penuh 25, di atas 48 jam mendekati 0
-        score_bep_25 = max(0.0, (48.0 - min(48.0, break_even_hours)) / 48.0) * 25.0
+        # 2. Bobot 25%: Kecepatan BEP Tercepat (Break-even hours)
+        # BEP <= 8 jam = 25 poin penuh, 72 jam = 0 poin
+        score_bep = max(0.0, (72.0 - min(72.0, break_even_hours)) / 72.0) * 25.0
 
-        # 3. Komponen Konsistensi Positif & Bebas Flip Historis (Bobot: 30%)
-        # Konsistensi 100% -> 30 poin, <70% terpotong drastis
-        score_consistency_30 = (max(0.0, consistency_pct) / 100.0) * 30.0
+        # 3. Bobot 30%: Stabilitas Historis & Anti-Flip Negatif
+        score_stability = (max(0.0, min(100.0, consistency_pct)) / 100.0) * 30.0
+        vol_penalty = min(5.0, (std_rate * cycles_per_day * 365 * 100.0) * 0.05)
+        score_stability_net = max(0.0, score_stability - vol_penalty)
 
-        # 4. Komponen Rata-rata Historis & Kestabilan (Bobot: 20%)
-        hist_annual_pct = historical_mean * cycles_per_day * 365 * 100.0
-        score_hist_20 = min(20.0, max(0.0, (hist_annual_pct / 40.0) * 20.0))
+        # 4. Bobot 20%: Kualitas Basis Spread (10%) & Likuiditas Pasar (10%)
+        score_spread = min(10.0, max(0.0, (basis_spread_percent / 0.02) * 10.0)) if basis_spread_percent > 0 else 0.0
+        score_liq = min(10.0, max(0.0, (volume_24h_usdt / 100000.0) * 10.0))
+        score_spread_liq = score_spread + score_liq
 
-        # Penalti Volatilitas/Standar Deviasi liar
-        vol_penalty = (std_rate * cycles_per_day * 365 * 100.0) * 0.10
-
-        composite_score = score_yield_25 + score_bep_25 + score_consistency_30 + score_hist_20 - vol_penalty
+        composite_score = score_yield + score_bep + score_stability_net + score_spread_liq
         return round(max(0.0, composite_score), 2)
 
 performance_scorer = PerformanceScorer()

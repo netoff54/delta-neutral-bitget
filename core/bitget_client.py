@@ -32,6 +32,7 @@ class BitgetClient:
 
         self.client = ccxt.bitget(config)
         self.markets_loaded = False
+        self._history_sem = asyncio.Semaphore(5)
 
     async def initialize(self, max_retries: int = 5):
         """Memuat daftar market Bitget (Spot & Futures) dengan retry berjenjang."""
@@ -124,46 +125,47 @@ class BitgetClient:
         since: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """Mengambil riwayat funding rate untuk pasangan tertentu hingga batas maksimal bursa (sampai 3 halaman / 270 siklus)."""
-        clean_sym = symbol.split('/')[0].upper() + "USDT"
-        all_records = []
-        try:
-            # Jika limit > 100, gunakan endpoint V2 Bitget dengan paginasi hingga 3 halaman (maksimal bursa)
-            if limit > 100:
-                pages_to_fetch = min(3, (limit + 99) // 100)
-                for page in range(1, pages_to_fetch + 1):
-                    res = await self.client.publicMixGetV2MixMarketHistoryFundRate({
-                        "symbol": clean_sym,
-                        "productType": "USDT-FUTURES",
-                        "pageSize": "100",
-                        "pageNo": str(page)
-                    })
-                    data = res.get("data", [])
-                    if not data:
-                        break
-                    for item in data:
-                        ts_ms = int(item.get("fundingTime", 0))
-                        fr = float(item.get("fundingRate", 0.0) or 0.0)
-                        all_records.append({
-                            "symbol": symbol,
-                            "fundingRate": fr,
-                            "timestamp": ts_ms,
-                            "fundingTimestamp": ts_ms,
-                            "datetime": datetime.utcfromtimestamp(ts_ms / 1000.0).isoformat() + "Z"
-                        })
-                    if len(data) < 100:
-                        break
-                if all_records:
-                    # Urutkan berdasarkan waktu terkecil ke terbesar
-                    all_records.sort(key=lambda x: x["timestamp"])
-                    return all_records[-limit:]
-
-            return await self.client.fetch_funding_rate_history(symbol, since=since, limit=limit)
-        except Exception as e:
-            log.warning(f"Gagal mengambil riwayat funding rate untuk {symbol}: {e}. Fallback ke ccxt.")
+        async with self._history_sem:
+            clean_sym = symbol.split('/')[0].upper() + "USDT"
+            all_records = []
             try:
-                return await self.client.fetch_funding_rate_history(symbol, since=since, limit=min(100, limit))
-            except Exception:
-                return []
+                # Jika limit > 100, gunakan endpoint V2 Bitget dengan paginasi hingga 3 halaman (maksimal bursa)
+                if limit > 100:
+                    pages_to_fetch = min(3, (limit + 99) // 100)
+                    for page in range(1, pages_to_fetch + 1):
+                        res = await self.client.publicMixGetV2MixMarketHistoryFundRate({
+                            "symbol": clean_sym,
+                            "productType": "USDT-FUTURES",
+                            "pageSize": "100",
+                            "pageNo": str(page)
+                        })
+                        data = res.get("data", [])
+                        if not data:
+                            break
+                        for item in data:
+                            ts_ms = int(item.get("fundingTime", 0))
+                            fr = float(item.get("fundingRate", 0.0) or 0.0)
+                            all_records.append({
+                                "symbol": symbol,
+                                "fundingRate": fr,
+                                "timestamp": ts_ms,
+                                "fundingTimestamp": ts_ms,
+                                "datetime": datetime.utcfromtimestamp(ts_ms / 1000.0).isoformat() + "Z"
+                            })
+                        if len(data) < 100:
+                            break
+                    if all_records:
+                        # Urutkan berdasarkan waktu terkecil ke terbesar
+                        all_records.sort(key=lambda x: x["timestamp"])
+                        return all_records[-limit:]
+
+                return await self.client.fetch_funding_rate_history(symbol, since=since, limit=limit)
+            except Exception as e:
+                log.warning(f"Gagal mengambil riwayat funding rate untuk {symbol}: {e}. Fallback ke ccxt.")
+                try:
+                    return await self.client.fetch_funding_rate_history(symbol, since=since, limit=min(100, limit))
+                except Exception:
+                    return []
 
     async def fetch_tickers(self, symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         """Mengambil ticker harga terkini dengan proteksi error."""
