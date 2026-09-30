@@ -50,7 +50,9 @@ class FundingHistoryAnalyzer:
                 taker_fee_recovery_cycles=99,
                 taker_fee_recovery_hours=999.0,
                 historical_quality_score=0.0,
-                sample_count=0
+                sample_count=0,
+                flip_free_days=365.0,
+                days_of_data=0.0
             )
 
         n = len(rates)
@@ -89,10 +91,19 @@ class FundingHistoryAnalyzer:
         days_7d = max(1.0, len(rates_7d) / cycles_per_day)
         seven_day_apy = round((cum_7d_yield / days_7d) * 365.0 * 100.0, 2)
 
-        # Konsistensi positif & deteksi flip negatif dalam horizon 120 hari
+        # Konsistensi positif & deteksi flip negatif dalam horizon 1 tahun / data historis
         positive_count = sum(1 for r in rates if r > 0)
         negative_flip_count = sum(1 for r in rates if r <= 0)
         consistency_pct = round((positive_count / n) * 100.0, 1)
+
+        # Durasi beruntun bebas flip negatif dari data terkini mundur ke masa lalu
+        consecutive_flip_free = 0
+        for r in reversed(rates):
+            if r > 0:
+                consecutive_flip_free += 1
+            else:
+                break
+        flip_free_days = round(consecutive_flip_free / cycles_per_day, 1)
 
         # Standar deviasi / volatilitas rate
         mean_rate = cum_yield / n
@@ -206,7 +217,9 @@ class FundingHistoryAnalyzer:
             manipulation_risk_score=manipulation_score,
             spike_count=spike_count,
             historical_quality_score=composite_score,
-            sample_count=n
+            sample_count=n,
+            flip_free_days=flip_free_days,
+            days_of_data=effective_days
         )
 
     # Alias untuk kompatibilitas

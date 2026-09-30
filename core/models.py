@@ -85,12 +85,14 @@ class HistoricalFundingStats(BaseModel):
     decay_trend: str = Field(default="STABLE", description="'ACCELERATING', 'DECAYING', 'STABLE'")
     taker_fee_recovery_cycles: int = Field(default=1, description="Estimasi siklus rata-rata untuk menutup biaya taker")
     taker_fee_recovery_hours: float = Field(default=8.0, description="Estimasi jam untuk menutup biaya taker")
-    # 4-Month Stability & Manipulation Intelligence
+    # 4-Month & 1-Year Stability & Manipulation Intelligence
     stability_diagnosis: str = Field(default="STABLE_AUTHENTIC", description="'STABLE_AUTHENTIC', 'MANIPULATIVE_VOLATILE', 'DECAYING_TRAP'")
     manipulation_risk_score: float = Field(default=0.0, description="Skor risiko manipulasi funding (0-100, 0=otentik stabil, >50=manipulatif)")
     spike_count: int = Field(default=0, description="Jumlah lonjakan artifisial funding rate dalam 120 hari")
     historical_quality_score: float = Field(default=0.0, description="Skor kualitas kuantitatif komposit (0-100)")
     sample_count: int = Field(default=0, description="Jumlah data settlement funding yang dianalisis")
+    flip_free_days: float = Field(default=365.0, description="Berapa hari beruntun koin ini bebas flip negatif")
+    days_of_data: float = Field(default=365.0, description="Total durasi hari data historis koin (1 tahun atau sejak listing)")
 
 class TakerSnapshot(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)

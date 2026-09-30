@@ -320,7 +320,7 @@ class OpportunityFinder:
             else:
                 opp.consistency_score_percent = hist_stats["consistency_pct"]
 
-            # Hitung skor performa komposit berbasis data (disesuaikan dengan interval 4h/8h/1h)
+            # Hitung skor performa komposit berbasis data (disesuaikan dengan interval 4h/8h/1h & bobot baru)
             base_comp_score = performance_scorer.calculate_composite_score(
                 predicted_next_rate=pred_rate,
                 historical_mean=opp.historical_mean_rate,
@@ -330,7 +330,8 @@ class OpportunityFinder:
                 break_even_hours=opp.break_even_hours,
                 funding_interval_hours=opp.funding_interval_hours,
                 basis_spread_percent=opp.basis_spread_percent,
-                volume_24h_usdt=opp.volume_24h_usdt
+                volume_24h_usdt=opp.volume_24h_usdt,
+                flip_free_days=getattr(stats_deep, "flip_free_days", 365.0) if stats_deep else 365.0
             )
 
             # Integrasikan skor kualitas historis 120 hari (Bobot: 50% jangka pendek + 50% kualitas 120 hari)

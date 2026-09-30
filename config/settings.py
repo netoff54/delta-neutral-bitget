@@ -32,7 +32,7 @@ class BotSettings(BaseSettings):
     INITIAL_SEED_CAPITAL_USDT: float = Field(default=64.0, description="Baseline modal awal pokok ($64.0 USDT default, auto-adjust saat ada deposit baru)")
     TOTAL_MAX_CAPITAL_USDT: Optional[float] = Field(default=None, description="Batas atas total modal (opsional)")
     LEVERAGE: int = Field(default=1, ge=1, le=1, description="Futures short leverage terkunci mutlak 1x")
-    MIN_24H_VOLUME_USDT: float = Field(default=50000.0, description="Minimum 24h volume for liquidity check ($50k)")
+    MIN_24H_VOLUME_USDT: float = Field(default=10000.0, description="Minimum 24h volume for liquidity check ($10k)")
 
     # Fee Structure
     SPOT_TAKER_FEE: float = Field(default=0.001, description="Spot taker fee rate (0.1%)")
@@ -43,7 +43,7 @@ class BotSettings(BaseSettings):
 
     # Strategy & Predictive Scoring - Target 2.5% Bersih per Minggu
     TARGET_WEEKLY_NET_YIELD_PERCENT: float = Field(default=2.5, description="Target keuntungan bersih mingguan (2.5% net per minggu)")
-    HISTORICAL_ANALYSIS_DAYS: int = Field(default=120, description="Horizon analisis riwayat funding rate (4 bulan / 120 hari untuk keamanan maksimal)")
+    HISTORICAL_ANALYSIS_DAYS: int = Field(default=365, description="Horizon analisis riwayat funding rate (1 tahun / 365 hari, atau sejak awal koin jika koin baru)")
     MIN_NET_APY_PERCENT: float = Field(default=35.0, description="Minimum acceptable net APY (35% APY agar koin prospektif tidak terbuang)")
     MAX_BREAK_EVEN_HOURS: float = Field(default=72.0, description="Maximum hours allowed to break even")
     MIN_CONSECUTIVE_POSITIVE_FUNDING: int = Field(default=2, description="Consecutive positive funding cycles required")

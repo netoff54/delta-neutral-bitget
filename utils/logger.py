@@ -12,14 +12,11 @@ if sys.platform == "win32":
     except Exception:
         pass
 import os
-console_width = min(110, int(os.getenv("CONSOLE_WIDTH", "105")))
+console_width = min(76, int(os.getenv("CONSOLE_WIDTH", "76")))
 is_cloud = bool(os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT") or not sys.stdout.isatty())
 
-if is_cloud:
-    # Mode Cloud (Render/Railway): Hapus seluruh ANSI escape codes dan batasi lebar agar tidak di-wrap oleh browser
-    console = Console(width=console_width, no_color=True, highlight=False, force_terminal=False, soft_wrap=True)
-else:
-    console = Console(width=console_width, force_terminal=True, soft_wrap=True)
+# Aktifkan warna standar ANSI dan batas lebar ketat 76 kolom agar log di Render tidak wrap
+console = Console(width=console_width, force_terminal=True, color_system="standard", soft_wrap=True)
 
 def print_clean_table(lines: list):
     """Mencetak baris tabel presisi langsung ke stdout agar perataan kolom 100% sempurna tanpa indentasi atau wrapping."""

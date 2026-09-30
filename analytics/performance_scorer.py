@@ -96,37 +96,43 @@ class PerformanceScorer:
         break_even_hours: float,
         funding_interval_hours: int = 8,
         basis_spread_percent: float = 0.0,
-        volume_24h_usdt: float = 50000.0,
+        volume_24h_usdt: float = 10000.0,
+        flip_free_days: float = 365.0,
     ) -> float:
         """
         Menghitung Skor Performa Komposit Kuantitatif (Bobot 0 - 100):
-        - Bunga Tertinggi / Yield Mingguan: 25%
-        - Kecepatan BEP Tercepat: 25%
-        - Stabilitas Historis & Anti-Flip Negatif: 30%
-        - Kualitas Spread Masuk/Keluar & Likuiditas: 20%
+        - 20%: Waktu tercepat mencapai 2.5% profit bersih (setelah lunas BEP)
+        - 15%: Bunga tertinggi (Current Yield / Predicted funding rate)
+        - 15%: Waktu histori bebas flip makin lama makin bagus (hingga 365 hari / 1 tahun)
+        - 25%: Kualitas Basis Spread Masuk & Keluar Positif (Proteksi Modal)
+        - 25%: Likuiditas & Volume Pasar (Ambang batas minimal $10k+)
         """
         cycles_per_day = 24.0 / max(1, funding_interval_hours)
         weekly_yield_pct = (predicted_next_rate * cycles_per_day * 7.0) * 100.0
 
-        # 1. Bobot 25%: Bunga Tertinggi / Yield Mingguan
-        # Benchmark target 2.5%/minggu = 25 poin penuh
-        score_yield = max(0.0, (weekly_yield_pct / 2.5) * 25.0)
+        # 1. Bobot 20%: Waktu Tercepat Mencapai Target 2.5% Profit Bersih (Setelah BEP Lunas)
+        rate_per_hour_pct = (predicted_next_rate * 100.0) / max(1, funding_interval_hours)
+        if rate_per_hour_pct > 0:
+            hours_to_target_net = break_even_hours + (2.5 / rate_per_hour_pct)
+        else:
+            hours_to_target_net = 9999.0
+        # Benchmark: target mingguan tercapai <= 168 jam (7 hari) = 20 poin penuh
+        score_target_speed = max(0.0, min(20.0, (168.0 / max(1.0, hours_to_target_net)) * 20.0))
 
-        # 2. Bobot 25%: Kecepatan BEP Tercepat (Break-even hours)
-        # BEP <= 8 jam = 25 poin penuh, 72 jam = 0 poin
-        score_bep = max(0.0, (72.0 - min(72.0, break_even_hours)) / 72.0) * 25.0
+        # 2. Bobot 15%: Bunga Tertinggi
+        # Benchmark yield mingguan 2.5% = 15 poin penuh
+        score_yield = max(0.0, min(15.0, (weekly_yield_pct / 2.5) * 15.0))
 
-        # 3. Bobot 30%: Stabilitas Historis & Anti-Flip Negatif
-        score_stability = (max(0.0, min(100.0, consistency_pct)) / 100.0) * 30.0
-        vol_penalty = min(5.0, (std_rate * cycles_per_day * 365 * 100.0) * 0.05)
-        score_stability_net = max(0.0, score_stability - vol_penalty)
+        # 3. Bobot 15%: Waktu Histori Bebas Flip (Makin lama bebas flip makin bagus hingga 1 tahun/365 hari)
+        score_flip_duration = max(0.0, min(15.0, (flip_free_days / 365.0) * 15.0))
 
-        # 4. Bobot 20%: Kualitas Basis Spread (10%) & Likuiditas Pasar (10%)
-        score_spread = min(10.0, max(0.0, (basis_spread_percent / 0.02) * 10.0)) if basis_spread_percent > 0 else 0.0
-        score_liq = min(10.0, max(0.0, (volume_24h_usdt / 100000.0) * 10.0))
-        score_spread_liq = score_spread + score_liq
+        # 4. Bobot 25%: Kualitas Basis Spread Masuk & Keluar (Menjamin spread positif tanpa rugi modal)
+        score_spread = min(25.0, max(0.0, (basis_spread_percent / 0.05) * 25.0)) if basis_spread_percent > 0 else 0.0
 
-        composite_score = score_yield + score_bep + score_stability_net + score_spread_liq
+        # 5. Bobot 25%: Likuiditas Pasar ($10k+ volume minimal)
+        score_liq = min(25.0, max(0.0, (volume_24h_usdt / 50000.0) * 25.0)) if volume_24h_usdt >= 10000.0 else 0.0
+
+        composite_score = score_target_speed + score_yield + score_flip_duration + score_spread + score_liq
         return round(max(0.0, composite_score), 2)
 
 performance_scorer = PerformanceScorer()
