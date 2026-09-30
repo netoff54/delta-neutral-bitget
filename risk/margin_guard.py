@@ -122,9 +122,8 @@ class MarginGuard:
                     self.pos_mgr.update_position(pos)
 
                     log.info(
-                        f"[RiskGuard] {pos.base_asset} -> Spot: ${current_spot_p:,.4f} | Perp: ${current_perp_p:,.4f} | "
-                        f"Net uPnL: ${net_unrealized:+.4f} | ROE Futures: {pos.current_roe_percent:+.2f}% | "
-                        f"MMR Bitget: {pos.current_margin_ratio:.1%} | Liq Price: ${pos.liquidation_price:,.4f}"
+                        f"🛡️ [RiskGuard] {pos.base_asset}: Spot ${current_spot_p:.4f} | Perp ${current_perp_p:.4f} | "
+                        f"uPnL: ${net_unrealized:+.4f} | MMR: {pos.current_margin_ratio:.1%} | ROE: {pos.current_roe_percent:+.1f}%"
                     )
 
                     # 2. Proteksi Darurat: BATALKAN DELTA NEUTRAL JIKA ROE FUTURES MINUS >= 85% (ATAU MMR >= 85%)

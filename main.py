@@ -135,18 +135,19 @@ def display_ai_brain_status():
         log.debug(f"AI Brain status display notice: {e}")
 
 def display_pnl_timeframes():
-    """Menampilkan tabel PnL portofolio multi-timeframe real Bitget ringkas (Width 76, Anti-Wrap)."""
+    """Menampilkan tabel PnL portofolio multi-timeframe real Bitget dengan pewarnaan penuh."""
     try:
         pnl_data = db.get_all_pnl_timeframes()
         if not pnl_data:
             return
 
-        sep = "+-----+------------+------------+------------+---------+------------+-------+"
-        header = "| TF  | MODAL AWAL | MODAL KINI | NET PNL    | PNL (%) | FUNDING    | APY   |"
+        sep = "[dim]+-----+------------+------------+---------------+----------+---------------+------------+[/dim]"
+        header = "| [bold cyan]TF [/bold cyan] | [bold yellow]MODAL AWAL [/bold yellow] | [bold yellow]MODAL KINI [/bold yellow] | [bold cyan]NET PNL USDT   [/bold cyan] | [bold green]PNL (%) [/bold green] | [bold yellow]FUNDING RIIL   [/bold yellow] | [bold green]ANNUAL APY [/bold green] |"
+        title = "[bold cyan]|  REKAP PNL PORTOFOLIO MULTI-TIMEFRAME (DATA REAL BITGET API - ZERO MOCK)              |[/bold cyan]"
 
         lines = [
             "\n" + sep,
-            f"|  REKAP PNL PORTOFOLIO MULTI-TIMEFRAME (DATA REAL BITGET){'':<17} |",
+            title,
             sep,
             header,
             sep
@@ -155,7 +156,7 @@ def display_pnl_timeframes():
         for label in ["1D", "1W", "1M", "2M", "4M", "1Y"]:
             data = pnl_data.get(label, {})
             if not data or not data.get("has_data", False):
-                lines.append(f"| {label:<3} | {'Belum Ada':<10} | {'-':<10} | {'-':<10} | {'-':<7} | {'-':<10} | {'-':<5} |")
+                lines.append(f"| [cyan]{label:<3}[/cyan] | {'Belum Ada':>10} | {'-':>10} | {'-':>13} | {'-':>8} | {'-':>13} | {'-':>10} |")
             else:
                 start_eq = f"${data.get('start_equity_usdt', 0.0):,.2f}"
                 curr_eq = f"${data.get('current_equity_usdt', 0.0):,.2f}"
@@ -165,13 +166,23 @@ def display_pnl_timeframes():
                 pnl_p = f"{pct_val:+.2f}%"
                 fund_h = f"+${data.get('funding_harvested_usdt', 0.0):.4f}"
                 ann_y = f"{data.get('annualized_yield_pct', 0.0):+.1f}%"
-                lines.append(f"| {label:<3} | {start_eq:<10} | {curr_eq:<10} | {pnl_u:<10} | {pnl_p:<7} | {fund_h:<10} | {ann_y:<5} |")
+                is_pos = pnl_val >= 0.0
+
+                c_tf   = f"[cyan]{label:<3}[/cyan]"
+                c_seq  = f"[white]{start_eq:>10}[/white]"
+                c_ceq  = f"[bold white]{curr_eq:>10}[/bold white]"
+                c_pnlu = f"[bold green]{pnl_u:>13}[/bold green]" if is_pos else f"[bold red]{pnl_u:>13}[/bold red]"
+                c_pnlp = f"[bold green]{pnl_p:>8}[/bold green]" if is_pos else f"[bold red]{pnl_p:>8}[/bold red]"
+                c_fund = f"[bold yellow]{fund_h:>13}[/bold yellow]"
+                c_apy  = f"[bold green]{ann_y:>10}[/bold green]" if is_pos else f"[bold red]{ann_y:>10}[/bold red]"
+
+                lines.append(f"| {c_tf} | {c_seq} | {c_ceq} | {c_pnlu} | {c_pnlp} | {c_fund} | {c_apy} |")
 
         all_time = pnl_data.get("all_time", {})
         if all_time:
             curr_eq = f"${all_time.get('current_equity_usdt', 0.0):,.2f}"
             tot_fund = f"+${all_time.get('total_funding_harvested_usdt', 0.0):.4f}"
-            lines.append(f"| {'ALL':<3} | {'-':<10} | {curr_eq:<10} | {'-':<10} | {'-':<7} | {tot_fund:<10} | {'-':<5} |")
+            lines.append(f"| [bold cyan]{'ALL':<3}[/bold cyan] | {' - ':>10} | [bold white]{curr_eq:>10}[/bold white] | {' - ':>13} | {' - ':>8} | [bold yellow]{tot_fund:>13}[/bold yellow] | {' - ':>10} |")
 
         lines.append(sep)
         print_clean_table(lines)
@@ -179,11 +190,11 @@ def display_pnl_timeframes():
         log.debug(f"PnL timeframe display notice: {e}")
 
 def display_opportunities(opportunities, top_n: int = 10):
-    """Menampilkan tabel ranking koin terbaik Bitget memanjang ringkas (Width 74, Anti-Wrap)."""
+    """Menampilkan tabel ranking koin terbaik Bitget memanjang ringkas penuh warna (Width 86)."""
     if not opportunities:
         return
 
-    # Urutkan koin berdasarkan skor komposit performa kuantitatif (bobot 20% target speed, 15% yield, 15% flip free, 25% spread, 25% vol)
+    # Urutkan koin berdasarkan skor komposit performa kuantitatif (bobot 25% BEP, 25% yield, 25% speed 2.5%, 15% spread, 10% flip/vol)
     sorted_opps = sorted(
         opportunities,
         key=lambda opp: (
@@ -194,12 +205,13 @@ def display_opportunities(opportunities, top_n: int = 10):
         reverse=True
     )
 
-    sep = "+----+------+---------+--------+-----+-----+-----------+-----------------+"
-    header = "| RK | KOIN | RATE/INT| 1W YLD | BEP |KE2.5| BEBAS FLIP| STATUS KELAYAKAN|"
+    sep = "[dim]+----+-------+-----------+---------+-------+-------+------------+--------------------+[/dim]"
+    header = "| [bold cyan]RK [/bold cyan] | [bold yellow]KOIN [/bold yellow] | [bold cyan]RATE/INT  [/bold cyan] | [bold green]1W YLD  [/bold green] | [bold cyan]BEP   [/bold cyan] | [bold magenta]KE2.5 [/bold magenta] | [bold blue]BEBAS FLIP [/bold blue] | [bold cyan]STATUS KELAYAKAN   [/bold cyan] |"
+    title = "[bold cyan]|  HASIL SCANNING & RANKING PELUANG (BOBOT: 25% BEP, 25% YIELD, 25% KE 2.5%)         |[/bold cyan]"
 
     ranking_lines = [
         "\n" + sep,
-        f"|  HASIL SCANNING & RANKING (BOBOT 20/15/15/25/25){'':<24} |",
+        title,
         sep,
         header,
         sep
@@ -211,13 +223,13 @@ def display_opportunities(opportunities, top_n: int = 10):
         # Hitung waktu BEP dalam satuan HARI
         bep_h = abs(opp.break_even_hours)
         bep_d = round(bep_h / 24.0, 1)
-        bep_str = f"{bep_d}h" if bep_h < 999 else "-"
+        bep_str = f"{bep_d}h" if bep_h < 999 else " - "
 
         # Hitung waktu menuju target 2.5% mingguan dalam satuan HARI
         rate_per_hour = (opp.current_funding_rate * 100.0) / max(1, opp.funding_interval_hours)
         hours_to_2_5 = abs(round(2.5 / rate_per_hour, 1)) if rate_per_hour > 0 else 999.0
         days_to_2_5 = round(hours_to_2_5 / 24.0, 1)
-        time_to_target_str = f"{days_to_2_5}h" if hours_to_2_5 < 999 else "-"
+        time_to_target_str = f"{days_to_2_5}h" if hours_to_2_5 < 999 else " - "
 
         # Hitung riwayat flip bebas (hingga 365 hari / 1 tahun atau sejak listing untuk koin baru)
         st = getattr(opp, "historical_120d_stats", None)
@@ -237,42 +249,44 @@ def display_opportunities(opportunities, top_n: int = 10):
                 flip_str = f"{int(flip_free)}h({flip_count}x)"
 
         # Status kelayakan & Alasan Jelas
-        if opp.is_eligible:
-            status_and_reason = f"LAYAK Sp{opp.basis_spread_percent:+.2f}%"
+        is_ok = opp.is_eligible
+        if is_ok:
+            status_text = f"Sp{opp.basis_spread_percent:+.2f}%"
+            c_stat = f"[bold green]🟢 LAYAK[/bold green] [green]{status_text:<9}[/green]"
         else:
             r_reason = (getattr(opp, "rejection_reason", "") or "").lower()
             if "flip" in r_reason or "negatif" in r_reason:
-                status_and_reason = f"TIDAK Flip ({flip_count}x)"
+                status_text = f"Flip({flip_count}x)"
             elif "volume" in r_reason:
-                status_and_reason = "TIDAK Vol <$10k"
+                status_text = "Vol <$10k"
             elif "spread" in r_reason:
-                status_and_reason = "TIDAK Spread Neg"
+                status_text = "Sprd Neg"
             elif "prediksi" in r_reason:
-                status_and_reason = "TIDAK Pred Neg"
+                status_text = "Pred Neg"
             else:
                 raw_r = getattr(opp, "rejection_reason", "Filter")
-                status_and_reason = f"TIDAK {raw_r[:9]}"
+                status_text = f"{raw_r[:8]}"
+            c_stat = f"[bold red]🔴 TIDAK[/bold red] [red]{status_text:<9}[/red]"
 
         rate_str = f"{opp.current_funding_rate*100:+.3f}%/{opp.funding_interval_hours}h"
         gross_str = f"{weekly_gross:+.2f}%"
 
-        row = (
-            f"| #{idx:<2}"
-            f"| {opp.base_asset:<5}"
-            f"| {rate_str:<8}"
-            f"| {gross_str:<7}"
-            f"| {bep_str:<4}"
-            f"|{time_to_target_str:<5}"
-            f"|{flip_str:<11}"
-            f"| {status_and_reason:<16}|"
-        )
+        c_idx   = f"[bold cyan]#{idx:<2}[/bold cyan]"
+        c_coin  = f"[bold yellow]{opp.base_asset:<5}[/bold yellow]"
+        c_rate  = f"[green]{rate_str:<9}[/green]" if is_ok else f"[red]{rate_str:<9}[/red]"
+        c_yld   = f"[bold green]{gross_str:>7}[/bold green]" if is_ok else f"[red]{gross_str:>7}[/red]"
+        c_bep   = f"[cyan]{bep_str:>5}[/cyan]"
+        c_ke25  = f"[bold magenta]{time_to_target_str:>5}[/bold magenta]"
+        c_flip  = f"[bold blue]{flip_str:^10}[/bold blue]"
+
+        row = f"| {c_idx} | {c_coin} | {c_rate} | {c_yld} | {c_bep} | {c_ke25} | {c_flip} | {c_stat} |"
         ranking_lines.append(row)
 
     ranking_lines.append(sep)
     print_clean_table(ranking_lines)
 
 def display_active_positions():
-    """Menampilkan telemetri portofolio posisi aktif gaya Excel ringkas (Width 78, Anti-Wrap & Zero Truncation)."""
+    """Menampilkan telemetri portofolio posisi aktif gaya Excel penuh warna (Width 88-89, Anti-Wrap & Zero Truncation)."""
     active_positions = position_manager.get_active_positions()
     if not active_positions:
         log.info("📊 [Portofolio] Belum ada posisi Delta-Neutral yang aktif saat ini. Modal cair siap dialokasikan.")
@@ -280,12 +294,13 @@ def display_active_positions():
 
     from utils.interval_helper import safe_hours_passed
 
-    sep_overview = "+--------+-----------------------+---------------------+---------------------+"
-    hdr_overview = "| KOIN   | ENTRY (SPOT / PERP)   | HARGA & SPREAD      | STATUS & PROGRESS   |"
+    sep_overview = "[dim]+--------+-------------------------+-------------------------+-------------------------+[/dim]"
+    hdr_overview = "| [bold yellow]KOIN   [/bold yellow] | [bold cyan]ENTRY (SPOT / PERP)     [/bold cyan] | [bold yellow]HARGA KINI & SPREAD     [/bold yellow] | [bold magenta]STATUS BEP & PROGRESS   [/bold magenta] |"
+    title_overview = "[bold cyan]|  RINGKASAN POSISI DELTA-NEUTRAL BERJALAN (GROUND-TRUTH BITGET)                       |[/bold cyan]"
 
     overview_lines = [
         "\n" + sep_overview,
-        f"|  RINGKASAN POSISI DELTA-NEUTRAL BERJALAN (GROUND-TRUTH BITGET){'':<14} |",
+        title_overview,
         sep_overview,
         hdr_overview,
         sep_overview
@@ -352,48 +367,48 @@ def display_active_positions():
         basis_spread = ((pos.perp_leg.current_price - pos.spot_leg.current_price) / pos.spot_leg.current_price * 100.0) if pos.spot_leg.current_price > 0 else 0.0
         spread_status = "AMAN" if basis_spread >= 0 else "CONV"
 
-        # Overview row format (Total width 78)
+        # Overview row format (Total width 88)
         entry_short = f"S:${pos.spot_leg.entry_price:.4f} P:${pos.perp_leg.entry_price:.4f}"
-        price_spread_short = f"${pos.spot_leg.current_price:.4f}/${pos.perp_leg.current_price:.4f} {basis_spread:+.2f}%"
+        price_spread_short = f"${pos.spot_leg.current_price:.4f}/${pos.perp_leg.current_price:.4f} ({basis_spread:+.2f}%)"
         status_prog_short = f"{status_bep_short} | {progress_short}"
 
         overview_row = (
-            f"| {pos.base_asset:<6} "
-            f"| {entry_short:<21} "
-            f"| {price_spread_short:<19} "
-            f"| {status_prog_short:<19} |"
+            f"| [bold yellow]{pos.base_asset:<6}[/bold yellow] "
+            f"| [cyan]{entry_short:<23}[/cyan] "
+            f"| [yellow]{price_spread_short:<23}[/yellow] "
+            f"| [bold magenta]{status_prog_short:<23}[/bold magenta] |"
         )
         overview_lines.append(overview_row)
 
-        # Detailed Excel Property Card (Width 78)
-        sep_card = "+--------------------------+-------------------------------------------------+"
-        title_card = f"RINCIAN METRIK: {pos.base_asset} (FOKUS 1 KOIN 1x ISOLATED)"
-        header_card = "| PARAMETER / METRIK       | NILAI REAL & TELEMETRI GROUND-TRUTH             |"
+        # Detailed Excel Property Card (Width 89)
+        sep_card = "[dim]+----------------------------+----------------------------------------------------------+[/dim]"
+        title_card = f"[bold cyan]|  RINCIAN METRIK: {pos.base_asset} (FOKUS 1 KOIN 1x ISOLATED){'':<43} |[/bold cyan]"
+        header_card = "| [bold cyan]PARAMETER / METRIK          [/bold cyan] | [bold yellow]NILAI REAL & TELEMETRI GROUND-TRUTH                        [/bold yellow] |"
 
         card_rows = [
-            ("Koin & Mode Trading", f"{pos.base_asset} (Spot Beli + Short Perp 1x Isolated)"),
-            ("Entry Spot (Beli)", f"{pos.spot_leg.amount:.2f} @ ${pos.spot_leg.entry_price:.4f} (${spot_nominal:.2f} USDT)"),
-            ("Entry Perp (Short)", f"{pos.perp_leg.amount:.2f} @ ${pos.perp_leg.entry_price:.4f} (${perp_nominal:.2f} USDT)"),
-            ("Harga & Basis Spread", f"S:${pos.spot_leg.current_price:.4f} P:${pos.perp_leg.current_price:.4f} ({basis_spread:+.2f}% [{spread_status}])"),
-            ("Status BEP Akun", f"{'[SUDAH BEP]' if is_port_bep else '[MENUJU BEP]'} Impas: ${abs(port_net):.4f} USDT Net"),
-            ("Estimasi Waktu ke BEP", bep_card_desc[:47]),
-            ("Progress vs Modal ($64)", f"{current_pct_vs_baseline:+.2f}% vs ${baseline:.2f} (Target 1W: +{settings.TARGET_WEEKLY_NET_YIELD_PERCENT:.1f}%)"),
-            ("Waktu ke Target 2.5%", target_card_desc[:47]),
-            ("Funding Fee Dipanen", f"+${pos.cumulative_funding_received:.4f} USDT (Ground-Truth Bitget)"),
-            ("Tingkat Funding", f"{pos.last_funding_rate*100:+.4f}%/{pos.funding_interval_hours}h (+${rate_per_hour_usdt*pos.funding_interval_hours:.4f}/siklus)"),
-            ("Margin & ROE Futures", f"MMR: {pos.current_margin_ratio:.1%} (Aman <85%) | ROE: {roe_val:+.2f}%"),
+            ("Koin & Mode Trading", f"{pos.base_asset} (Spot Beli + Short Perp 1x Isolated)", "bold yellow"),
+            ("Entry Spot (Beli)", f"{pos.spot_leg.amount:.2f} @ ${pos.spot_leg.entry_price:.4f} (${spot_nominal:.2f} USDT)", "green"),
+            ("Entry Perp (Short)", f"{pos.perp_leg.amount:.2f} @ ${pos.perp_leg.entry_price:.4f} (${perp_nominal:.2f} USDT)", "magenta"),
+            ("Harga & Basis Spread", f"S:${pos.spot_leg.current_price:.4f} P:${pos.perp_leg.current_price:.4f} ({basis_spread:+.2f}% [{spread_status}])", "bold green"),
+            ("Status BEP Akun", f"{'[SUDAH BEP]' if is_port_bep else '[MENUJU BEP]'} Impas: ${abs(port_net):.4f} USDT Net", "yellow"),
+            ("Estimasi Waktu ke BEP", bep_card_desc[:56], "cyan"),
+            ("Progress vs Modal ($64)", f"{current_pct_vs_baseline:+.2f}% vs ${baseline:.2f} (Target 1W: +{settings.TARGET_WEEKLY_NET_YIELD_PERCENT:.1f}%)", "magenta"),
+            ("Waktu ke Target 2.5%", target_card_desc[:56], "bold magenta"),
+            ("Funding Fee Dipanen", f"+${pos.cumulative_funding_received:.4f} USDT (Ground-Truth Bitget)", "bold green"),
+            ("Tingkat Funding", f"{pos.last_funding_rate*100:+.4f}%/{pos.funding_interval_hours}h (+${rate_per_hour_usdt*pos.funding_interval_hours:.4f}/siklus)", "green"),
+            ("Margin & ROE Futures", f"MMR: {pos.current_margin_ratio:.1%} (Aman <85%) | ROE: {roe_val:+.2f}%", "cyan"),
         ]
 
         card_lines.extend([
             "\n" + sep_card,
-            f"|  {title_card:<74} |",
+            title_card,
             sep_card,
             header_card,
             sep_card
         ])
 
-        for label, val in card_rows:
-            card_lines.append(f"| {label:<24} | {val:<47} |")
+        for label, val, v_color in card_rows:
+            card_lines.append(f"| [cyan]{label:<26}[/cyan] | [{v_color}]{val:<56}[/{v_color}] |")
 
         card_lines.append(sep_card)
 

@@ -234,10 +234,7 @@ class AutoRebalancer:
 
                 if (not pos.is_bep_reached or pos.net_pnl_usdt <= 0.0) or (not is_port_bep and port_net_pnl < 0.0):
                     log.info(
-                        f"⏳ [Rotasi Ditunda] {pos.base_asset} BELUM BEP: "
-                        f"Posisi Net PnL: ${pos.net_pnl_usdt:+.4f} USDT | Portofolio Bitget Net: ${port_net_pnl:+.4f} USDT | "
-                        f"Real Funding: +${pos.realized_funding_usdt:.4f} USDT. "
-                        f"Menolak rotasi sukarela demi melindungi modal awal dari kerugian fee bursa."
+                        f"⏳ [Rotasi Ditunda] {pos.base_asset} Belum BEP (Net: ${port_net_pnl:+.4f} USDT | Funding: +${pos.realized_funding_usdt:.4f} USDT) -> Tahan amankan modal pokok."
                     )
                     continue
 

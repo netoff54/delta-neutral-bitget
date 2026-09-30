@@ -12,16 +12,16 @@ if sys.platform == "win32":
     except Exception:
         pass
 import os
-console_width = min(76, int(os.getenv("CONSOLE_WIDTH", "76")))
+console_width = min(92, int(os.getenv("CONSOLE_WIDTH", "92")))
 is_cloud = bool(os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT") or not sys.stdout.isatty())
 
-# Aktifkan warna standar ANSI dan batas lebar ketat 76 kolom agar log di Render tidak wrap
+# Aktifkan warna standar ANSI dan batas lebar 92 kolom agar tabel tidak wrap dan berpenampilan penuh warna
 console = Console(width=console_width, force_terminal=True, color_system="standard", soft_wrap=True)
 
 def print_clean_table(lines: list):
-    """Mencetak baris tabel presisi langsung ke stdout agar perataan kolom 100% sempurna tanpa indentasi atau wrapping."""
+    """Mencetak baris tabel presisi dengan Rich console agar warna (Green, Yellow, Cyan, Red, Magenta) muncul di Render logs."""
     for line in lines:
-        print(line, flush=True)
+        console.print(line)
 
 def setup_logger(name: str = "delta_neutral", log_file: str = "bot.log") -> logging.Logger:
     logger = logging.getLogger(name)
