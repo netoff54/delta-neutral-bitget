@@ -310,6 +310,35 @@ class UnifiedDatabase:
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_comb_time ON combined_balance_history(timestamp_utc)")
 
+            # 9. Tabel Monthly TP State (Persistensi siklus 30-hari Take Profit - Tahan Restart & Redeploy)
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS monthly_tp_state (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    cycle_start_utc TEXT NOT NULL,
+                    cycle_end_utc TEXT NOT NULL,
+                    baseline_capital_usdt REAL NOT NULL,
+                    total_executed_tp_usdt REAL DEFAULT 0.0,
+                    last_execution_utc TEXT,
+                    executions_count INTEGER DEFAULT 0,
+                    last_skipped_reason TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """ if not self.is_postgres else f"""
+                CREATE TABLE IF NOT EXISTS monthly_tp_state (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    cycle_start_utc TEXT NOT NULL,
+                    cycle_end_utc TEXT NOT NULL,
+                    baseline_capital_usdt REAL NOT NULL,
+                    total_executed_tp_usdt REAL DEFAULT 0.0,
+                    last_execution_utc TEXT,
+                    executions_count INTEGER DEFAULT 0,
+                    last_skipped_reason TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
             # Safe Schema Migrations (PostgreSQL & SQLite) agar kompatibel dengan database yang sudah ada
             if self.is_postgres:
                 migration_sqls = [
@@ -1031,5 +1060,106 @@ class UnifiedDatabase:
             cursor.execute(self._format_query(sql), (cutoff_iso,))
             rows = cursor.fetchall()
             return [dict(r) for r in rows]
+
+    # =========================================================================
+    # PILAR 10: MONTHLY TP STATE (PERSISTENSI SIKLUS 30-HARI - TAHAN RESTART)
+    # =========================================================================
+    def get_monthly_tp_state(self) -> Optional[Dict[str, Any]]:
+        """Mengambil state siklus Monthly Take Profit dari database (id=1, satu baris aktif)."""
+        sql = "SELECT * FROM monthly_tp_state WHERE id = 1"
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(self._format_query(sql))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            log.debug(f"[MonthlyTP DB] get_monthly_tp_state notice: {e}")
+            return None
+
+    def upsert_monthly_tp_state(
+        self,
+        cycle_start_utc: str,
+        cycle_end_utc: str,
+        baseline_capital_usdt: float,
+        total_executed_tp_usdt: float = 0.0,
+        last_execution_utc: Optional[str] = None,
+        executions_count: int = 0,
+        last_skipped_reason: Optional[str] = None
+    ):
+        """Simpan atau perbarui state siklus Monthly TP (upsert pada id=1)."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            if self.is_postgres:
+                sql = """
+                    INSERT INTO monthly_tp_state (
+                        id, cycle_start_utc, cycle_end_utc, baseline_capital_usdt,
+                        total_executed_tp_usdt, last_execution_utc, executions_count,
+                        last_skipped_reason, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        cycle_start_utc = EXCLUDED.cycle_start_utc,
+                        cycle_end_utc = EXCLUDED.cycle_end_utc,
+                        baseline_capital_usdt = EXCLUDED.baseline_capital_usdt,
+                        total_executed_tp_usdt = EXCLUDED.total_executed_tp_usdt,
+                        last_execution_utc = EXCLUDED.last_execution_utc,
+                        executions_count = EXCLUDED.executions_count,
+                        last_skipped_reason = EXCLUDED.last_skipped_reason,
+                        updated_at = EXCLUDED.updated_at
+                """
+            else:
+                sql = """
+                    INSERT OR REPLACE INTO monthly_tp_state (
+                        id, cycle_start_utc, cycle_end_utc, baseline_capital_usdt,
+                        total_executed_tp_usdt, last_execution_utc, executions_count,
+                        last_skipped_reason, created_at, updated_at
+                    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+            params = (
+                1 if self.is_postgres else None,
+                cycle_start_utc, cycle_end_utc, float(baseline_capital_usdt),
+                float(total_executed_tp_usdt), last_execution_utc,
+                int(executions_count), last_skipped_reason, now_iso, now_iso
+            )
+            if not self.is_postgres:
+                params = params[1:]  # Hapus id=1 untuk SQLite (sudah di VALUES literal)
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql, params)
+        except Exception as e:
+            log.warning(f"[MonthlyTP DB] upsert_monthly_tp_state notice: {e}")
+
+    def record_monthly_tp_execution(
+        self,
+        amount_usdt: float,
+        total_balance_before: float,
+        baseline_capital_usdt: float,
+        remaining_after_tp: float,
+        surplus_usdt: float,
+        skipped: bool = False,
+        skip_reason: Optional[str] = None
+    ):
+        """Catat ke AGI memory setiap kali TP dieksekusi atau dilewati untuk audit trail lengkap."""
+        event_type = "MONTHLY_TP_EXECUTED" if not skipped else "MONTHLY_TP_SKIPPED"
+        lesson = (
+            f"Monthly TP {'dieksekusi' if not skipped else 'dilewati'}: "
+            f"${amount_usdt:.4f} USDT ({'OK' if not skipped else skip_reason}). "
+            f"Saldo sebelum: ${total_balance_before:.2f} | Surplus: ${surplus_usdt:.4f}"
+        )
+        self.record_agi_experience(
+            event_type=event_type,
+            harvest_usdt=amount_usdt if not skipped else 0.0,
+            net_pnl_usdt=surplus_usdt,
+            lesson_learned=lesson,
+            context_snapshot={
+                "tp_amount_usdt": amount_usdt,
+                "total_balance_before": total_balance_before,
+                "baseline_capital": baseline_capital_usdt,
+                "remaining_after_tp": remaining_after_tp,
+                "surplus_usdt": surplus_usdt,
+                "skipped": skipped,
+                "skip_reason": skip_reason
+            }
+        )
 
 db = UnifiedDatabase()

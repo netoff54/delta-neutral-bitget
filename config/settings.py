@@ -67,6 +67,12 @@ class BotSettings(BaseSettings):
     # Yield Vault (Profit Protection - Jangan Sentuh Uang Hasil Earn)
     VAULT_LOCK_PROFITS: bool = Field(default=True, description="Kunci seluruh profit hasil earn agar tidak dipakai trading")
 
+    # Monthly Take Profit Reserve (5% dari total saldo Bitget setiap 30 hari)
+    MONTHLY_TP_ENABLED: bool = Field(default=True, description="Aktifkan fitur penyisihan Take Profit otomatis setiap 30 hari rolling")
+    MONTHLY_TP_PERCENT: float = Field(default=0.05, description="Persentase total saldo Bitget yang disisihkan ke brankas setiap 30 hari (default: 5%)")
+    MONTHLY_TP_CYCLE_DAYS: int = Field(default=30, description="Durasi siklus evaluasi Take Profit dalam hari (default: 30 hari rolling)")
+    MONTHLY_TP_MIN_SURPLUS_PERCENT: float = Field(default=0.01, description="Modal pokok wajib surplus minimal 1% di atas baseline setelah TP dieksekusi (mencegah modal balik ke titik awal)")
+
     # Risk Controls (Maksimal ROE & MMR tidak boleh melewati 85%)
     MARGIN_CALL_THRESHOLD: float = Field(default=0.75, description="Ambang batas peringatan margin ratio / MMR Bitget (75%)")
     AUTO_CLOSE_MARGIN_RATIO: float = Field(default=0.85, description="Ambang batas margin ratio / MMR Bitget untuk auto-close darurat (85%)")

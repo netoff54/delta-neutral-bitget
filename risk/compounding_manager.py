@@ -2,7 +2,7 @@ import json
 import math
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, Field
 
 from config.settings import settings
@@ -226,4 +226,327 @@ class CompoundingManager:
             last_updated=datetime.utcnow()
         )
 
+
+# =============================================================================
+# MONTHLY TAKE PROFIT MANAGER
+# Siklus 30-Hari Rolling — State Persisten di PostgreSQL (Tahan Restart/Redeploy)
+# =============================================================================
+class MonthlyTakeProfitManager:
+    """
+    Manajer Penyisihan Take Profit Bulanan (5% dari Total Saldo Bitget setiap 30 hari).
+
+    Prinsip Utama:
+    1. Siklus 30-hari Rolling — waktu dihitung dari database, TIDAK hilang saat restart/redeploy.
+    2. Capital Floor Guard — TP HANYA dieksekusi jika sisa saldo (95%) masih SURPLUS di atas
+       modal pokok awal + minimal 1%. Modal awal dijamin tidak pernah berkurang.
+    3. Deposit Awareness — jika user menambah saldo di tengah siklus, baseline otomatis menyesuaikan
+       dan timer 30 hari TIDAK direset.
+    4. Safe Withdrawal Log — setiap siklus (dan setiap scan) bot menampilkan laporan berapa
+       USDT yang aman untuk ditarik, secara eksplisit dalam nominal.
+    5. Audit Trail — setiap eksekusi / penolakan TP dicatat ke database AGI memory untuk transparansi.
+    """
+
+    def __init__(self):
+        self._state_loaded = False
+        self._cycle_start: Optional[datetime] = None
+        self._cycle_end: Optional[datetime] = None
+        self._baseline_at_cycle_start: float = 0.0
+        self._total_executed_usdt: float = 0.0
+        self._executions_count: int = 0
+
+    def _load_state_from_db(self, db) -> bool:
+        """Muat state siklus dari database (PostgreSQL atau SQLite)."""
+        try:
+            row = db.get_monthly_tp_state()
+            if row:
+                self._cycle_start = datetime.fromisoformat(row["cycle_start_utc"])
+                self._cycle_end = datetime.fromisoformat(row["cycle_end_utc"])
+                self._baseline_at_cycle_start = float(row["baseline_capital_usdt"])
+                self._total_executed_usdt = float(row.get("total_executed_tp_usdt", 0.0))
+                self._executions_count = int(row.get("executions_count", 0))
+                return True
+        except Exception as e:
+            log.debug(f"[MonthlyTP] Load state notice: {e}")
+        return False
+
+    def _init_new_cycle(self, db, baseline_capital: float):
+        """Inisialisasi siklus 30-hari baru dan simpan ke database."""
+        cycle_days = int(getattr(settings, "MONTHLY_TP_CYCLE_DAYS", 30))
+        now_utc = datetime.now(timezone.utc)
+        self._cycle_start = now_utc
+        self._cycle_end = now_utc + timedelta(days=cycle_days)
+        self._baseline_at_cycle_start = round(baseline_capital, 4)
+        self._total_executed_usdt = 0.0
+        self._executions_count = 0
+        db.upsert_monthly_tp_state(
+            cycle_start_utc=self._cycle_start.isoformat(),
+            cycle_end_utc=self._cycle_end.isoformat(),
+            baseline_capital_usdt=self._baseline_at_cycle_start,
+            total_executed_tp_usdt=0.0,
+            executions_count=0
+        )
+        log.info(
+            f"📅 [MonthlyTP] Siklus 30-hari baru dimulai: {self._cycle_start.strftime('%Y-%m-%d %H:%M UTC')} "
+            f"→ {self._cycle_end.strftime('%Y-%m-%d %H:%M UTC')} | "
+            f"Baseline Modal: ${self._baseline_at_cycle_start:.2f} USDT"
+        )
+
+    def calculate_safe_withdrawal(
+        self,
+        total_balance_usdt: float,
+        baseline_capital_usdt: float
+    ) -> Dict[str, Any]:
+        """
+        Hitung berapa USDT yang boleh ditarik hari ini agar modal awal tetap SURPLUS.
+
+        Syarat Capital Floor Guard:
+            saldo_setelah_tp = total_balance * (1 - tp_pct)
+            saldo_setelah_tp >= baseline * (1 + min_surplus_pct)
+
+        Returns dict dengan:
+          - safe_amount_usdt: jumlah pasti yang boleh ditarik (0 jika belum aman)
+          - can_execute: True/False
+          - reason: penjelasan singkat
+          - surplus_after_usdt: surplus di atas modal awal jika ditarik
+          - tp_percent: persentase yang digunakan
+        """
+        tp_pct = float(getattr(settings, "MONTHLY_TP_PERCENT", 0.05))
+        min_surplus_pct = float(getattr(settings, "MONTHLY_TP_MIN_SURPLUS_PERCENT", 0.01))
+
+        tp_amount = round(total_balance_usdt * tp_pct, 4)
+        remaining_after_tp = round(total_balance_usdt - tp_amount, 4)
+        required_floor = round(baseline_capital_usdt * (1.0 + min_surplus_pct), 4)
+        surplus_after = round(remaining_after_tp - baseline_capital_usdt, 4)
+
+        if total_balance_usdt <= 0 or baseline_capital_usdt <= 0:
+            return {
+                "safe_amount_usdt": 0.0,
+                "can_execute": False,
+                "reason": "Saldo atau modal awal tidak valid",
+                "surplus_after_usdt": 0.0,
+                "tp_percent": tp_pct,
+                "tp_amount_gross": 0.0,
+                "remaining_after_tp": 0.0,
+                "required_floor": required_floor
+            }
+
+        if remaining_after_tp >= required_floor:
+            return {
+                "safe_amount_usdt": tp_amount,
+                "can_execute": True,
+                "reason": f"AMAN — Sisa ${remaining_after_tp:.2f} > Floor ${required_floor:.2f} (Surplus +${surplus_after:.2f})",
+                "surplus_after_usdt": surplus_after,
+                "tp_percent": tp_pct,
+                "tp_amount_gross": tp_amount,
+                "remaining_after_tp": remaining_after_tp,
+                "required_floor": required_floor
+            }
+        else:
+            shortfall = round(required_floor - remaining_after_tp, 4)
+            return {
+                "safe_amount_usdt": 0.0,
+                "can_execute": False,
+                "reason": (
+                    f"BELUM AMAN — Sisa ${remaining_after_tp:.2f} < Floor ${required_floor:.2f} "
+                    f"(Kurang ${shortfall:.2f} USDT lagi)"
+                ),
+                "surplus_after_usdt": surplus_after,
+                "tp_percent": tp_pct,
+                "tp_amount_gross": tp_amount,
+                "remaining_after_tp": remaining_after_tp,
+                "required_floor": required_floor
+            }
+
+    def print_safe_withdrawal_report(
+        self,
+        total_balance_usdt: float,
+        baseline_capital_usdt: float,
+        db,
+        force_full_report: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Tampilkan laporan Safe Withdrawal ke log.
+        - Setiap scan: tampilkan ringkasan 1 baris
+        - Setiap jatuh tempo siklus / force_full_report: tampilkan panel lengkap
+        """
+        now_utc = datetime.now(timezone.utc)
+        result = self.calculate_safe_withdrawal(total_balance_usdt, baseline_capital_usdt)
+
+        # Hitung hari ke-N dalam siklus
+        day_in_cycle = 0
+        days_remaining = 0
+        cycle_days = int(getattr(settings, "MONTHLY_TP_CYCLE_DAYS", 30))
+        if self._cycle_start:
+            elapsed = (now_utc - self._cycle_start.replace(tzinfo=timezone.utc) if self._cycle_start.tzinfo is None else now_utc - self._cycle_start)
+            day_in_cycle = max(1, int(elapsed.total_seconds() / 86400) + 1)
+            days_remaining = max(0, cycle_days - day_in_cycle + 1)
+
+        profit_this_cycle = round(total_balance_usdt - baseline_capital_usdt, 4)
+        profit_pct = round((profit_this_cycle / baseline_capital_usdt * 100.0), 2) if baseline_capital_usdt > 0 else 0.0
+
+        can = result["can_execute"]
+        safe_amt = result["safe_amount_usdt"]
+        surplus = result["surplus_after_usdt"]
+        tp_pct = result["tp_percent"]
+
+        if force_full_report:
+            # Panel lengkap saat jatuh tempo
+            sep = "═" * 58
+            status_icon = "🟢" if can else "🔴"
+            status_text = "BOLEH DITARIK" if can else "BELUM BOLEH DITARIK"
+            log.info(f"\n╔{sep}╗")
+            log.info(f"║  {'💰 MONTHLY SAFE WITHDRAWAL REPORT':<54}  ║")
+            log.info(f"╠{sep}╣")
+            log.info(f"║  📅 Hari ke-{day_in_cycle}/{cycle_days} Siklus ({days_remaining} hari tersisa){'':>18}  ║")
+            log.info(f"║  💼 Modal Pokok Awal    : ${baseline_capital_usdt:<10.2f}{'':>22}  ║")
+            log.info(f"║  📈 Saldo Total Bitget  : ${total_balance_usdt:<10.2f}{'':>22}  ║")
+            log.info(f"║  📊 Profit Siklus Ini   : +${profit_this_cycle:<8.4f} ({profit_pct:+.2f}%){'':>14}  ║")
+            log.info(f"╠{sep}╣")
+            log.info(f"║  🎯 {tp_pct*100:.0f}% dari Saldo Total : ${result['tp_amount_gross']:<10.4f}{'':>22}  ║")
+            log.info(f"║  🛡️  Sisa Setelah Ditarik: ${result['remaining_after_tp']:<10.4f}{'':>22}  ║")
+            if can:
+                log.info(f"║  ✅ Modal Awal Surplus  : +${surplus:<9.4f} USDT (AMAN){'':>15}  ║")
+            else:
+                log.info(f"║  ❌ Modal Awal Defisit  : ${surplus:<10.4f} USDT (TIDAK AMAN){'':>10}  ║")
+            log.info(f"╠{sep}╣")
+            log.info(f"║  {status_icon} STATUS             : {status_text:<34}  ║")
+            log.info(f"║  💵 JUMLAH AMAN DITARIK : ${safe_amt:<10.4f} USDT{'':>22}  ║")
+            if not can:
+                log.info(f"║  ♻️  AKSI               : Compounding dilanjutkan...{'':>10}  ║")
+            log.info(f"╚{sep}╝")
+        else:
+            # Ringkasan 1 baris per scan
+            status_short = "✅ BOLEH AMBIL" if can else "⏳ BELUM WAKTUNYA"
+            log.info(
+                f"💰 [MonthlyTP] Hari ke-{day_in_cycle}/{cycle_days} | "
+                f"Saldo: ${total_balance_usdt:.2f} | "
+                f"Bisa ditarik sekarang: ${safe_amt:.2f} USDT | "
+                f"Profit siklus: {profit_pct:+.2f}% | {status_short}"
+            )
+
+        return result
+
+    def evaluate_and_execute(
+        self,
+        total_balance_usdt: float,
+        baseline_capital_usdt: float,
+        db,
+        vault  # YieldVault instance
+    ) -> Dict[str, Any]:
+        """
+        Evaluasi apakah siklus 30-hari sudah jatuh tempo dan eksekusi TP jika syarat terpenuhi.
+        Dipanggil di main loop setiap siklus scan.
+
+        Returns:
+            dict dengan keys: executed, amount_usdt, reason, is_new_cycle
+        """
+        if not getattr(settings, "MONTHLY_TP_ENABLED", True):
+            return {"executed": False, "amount_usdt": 0.0, "reason": "MONTHLY_TP_ENABLED=False", "is_new_cycle": False}
+
+        now_utc = datetime.now(timezone.utc)
+
+        # Muat state dari DB jika belum dimuat
+        if not self._state_loaded:
+            found = self._load_state_from_db(db)
+            self._state_loaded = True
+            if not found:
+                # Pertama kali: inisialisasi siklus baru
+                self._init_new_cycle(db, baseline_capital_usdt)
+                # Tampilkan laporan hanya info start
+                self.print_safe_withdrawal_report(total_balance_usdt, baseline_capital_usdt, db)
+                return {"executed": False, "amount_usdt": 0.0, "reason": "Siklus baru dimulai", "is_new_cycle": True}
+
+        # Pastikan cycle_end timezone-aware
+        cycle_end = self._cycle_end
+        if cycle_end and cycle_end.tzinfo is None:
+            cycle_end = cycle_end.replace(tzinfo=timezone.utc)
+
+        # Tampilkan ringkasan per scan
+        result = self.print_safe_withdrawal_report(total_balance_usdt, baseline_capital_usdt, db)
+
+        # Cek apakah siklus sudah jatuh tempo
+        if cycle_end and now_utc < cycle_end:
+            return {"executed": False, "amount_usdt": 0.0, "reason": "Siklus belum jatuh tempo", "is_new_cycle": False}
+
+        # JATUH TEMPO — tampilkan laporan lengkap
+        result = self.print_safe_withdrawal_report(
+            total_balance_usdt, baseline_capital_usdt, db, force_full_report=True
+        )
+
+        if result["can_execute"]:
+            tp_amount = result["safe_amount_usdt"]
+            surplus = result["surplus_after_usdt"]
+
+            # Kunci ke YieldVault
+            vault.deposit_harvest(
+                position_id=f"monthly_tp_{now_utc.strftime('%Y%m%d')}",
+                base_asset="MONTHLY_TP",
+                amount_usdt=tp_amount,
+                funding_rate=0.0
+            )
+
+            # Update state & simpan ke DB
+            self._total_executed_usdt += tp_amount
+            self._executions_count += 1
+            db.record_monthly_tp_execution(
+                amount_usdt=tp_amount,
+                total_balance_before=total_balance_usdt,
+                baseline_capital_usdt=baseline_capital_usdt,
+                remaining_after_tp=result["remaining_after_tp"],
+                surplus_usdt=surplus,
+                skipped=False
+            )
+
+            log.info(
+                f"✅ [MonthlyTP] TAKE PROFIT BERHASIL DIKUNCI!\n"
+                f"   -> ${tp_amount:.4f} USDT masuk ke YieldVault (bisa Anda withdraw kapan saja)\n"
+                f"   -> Modal aktif tersisa: ${result['remaining_after_tp']:.2f} USDT "
+                f"(Surplus +${surplus:.4f} di atas modal awal ${baseline_capital_usdt:.2f})"
+            )
+
+            # Mulai siklus baru dengan baseline TETAP (modal pokok tidak berubah)
+            self._init_new_cycle(db, baseline_capital_usdt)
+            return {"executed": True, "amount_usdt": tp_amount, "reason": result["reason"], "is_new_cycle": True}
+
+        else:
+            # Syarat tidak terpenuhi — catat dan lanjutkan compounding
+            skip_reason = result["reason"]
+            db.upsert_monthly_tp_state(
+                cycle_start_utc=self._cycle_start.isoformat() if self._cycle_start else now_utc.isoformat(),
+                cycle_end_utc=self._cycle_end.isoformat() if self._cycle_end else (now_utc + timedelta(days=30)).isoformat(),
+                baseline_capital_usdt=self._baseline_at_cycle_start,
+                total_executed_tp_usdt=self._total_executed_usdt,
+                executions_count=self._executions_count,
+                last_skipped_reason=skip_reason
+            )
+            db.record_monthly_tp_execution(
+                amount_usdt=0.0,
+                total_balance_before=total_balance_usdt,
+                baseline_capital_usdt=baseline_capital_usdt,
+                remaining_after_tp=total_balance_usdt,
+                surplus_usdt=result["surplus_after_usdt"],
+                skipped=True,
+                skip_reason=skip_reason
+            )
+
+            log.warning(
+                f"⚠️  [MonthlyTP] TAKE PROFIT DILEWATI — {skip_reason}\n"
+                f"   -> Compounding dilanjutkan hingga surplus terpenuhi."
+            )
+
+            # Perpanjang siklus 30 hari lagi dari sekarang
+            cycle_days = int(getattr(settings, "MONTHLY_TP_CYCLE_DAYS", 30))
+            self._cycle_end = now_utc + timedelta(days=cycle_days)
+            db.upsert_monthly_tp_state(
+                cycle_start_utc=self._cycle_start.isoformat() if self._cycle_start else now_utc.isoformat(),
+                cycle_end_utc=self._cycle_end.isoformat(),
+                baseline_capital_usdt=self._baseline_at_cycle_start,
+                total_executed_tp_usdt=self._total_executed_usdt,
+                executions_count=self._executions_count,
+                last_skipped_reason=skip_reason
+            )
+            return {"executed": False, "amount_usdt": 0.0, "reason": skip_reason, "is_new_cycle": False}
+
+
 compounding_manager = CompoundingManager()
+monthly_tp_manager = MonthlyTakeProfitManager()

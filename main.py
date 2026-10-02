@@ -29,7 +29,8 @@ from execution.position_manager import position_manager
 from execution.rebalancer import auto_rebalancer
 from risk.margin_guard import margin_guard
 from risk.funding_guard import funding_guard
-from risk.compounding_manager import compounding_manager
+from risk.compounding_manager import compounding_manager, monthly_tp_manager
+from risk.yield_vault import yield_vault
 
 def print_banner(dry_run: bool):
     """Menampilkan banner konsol profesional ringkas (Width 76)."""
@@ -194,7 +195,7 @@ def display_opportunities(opportunities, top_n: int = 10):
     if not opportunities:
         return
 
-    # Urutkan koin berdasarkan skor komposit performa kuantitatif (bobot 25% BEP, 25% yield, 25% speed 2.5%, 15% spread, 10% flip/vol)
+    # Urutkan koin berdasarkan skor komposit performa kuantitatif (bobot 25% Rate, 25% BEP, 25% speed 2.5%, 15% spread, 10% flip/vol)
     sorted_opps = sorted(
         opportunities,
         key=lambda opp: (
@@ -207,7 +208,7 @@ def display_opportunities(opportunities, top_n: int = 10):
 
     sep = "[dim]+----+-------+-----------+---------+-------+-------+------------+--------------------+[/dim]"
     header = "| [bold cyan]RK [/bold cyan] | [bold yellow]KOIN [/bold yellow] | [bold cyan]RATE/INT  [/bold cyan] | [bold green]1W YLD  [/bold green] | [bold cyan]BEP   [/bold cyan] | [bold magenta]KE2.5 [/bold magenta] | [bold blue]BEBAS FLIP [/bold blue] | [bold cyan]STATUS KELAYAKAN   [/bold cyan] |"
-    title = "[bold cyan]|  HASIL SCANNING & RANKING PELUANG (BOBOT: 25% BEP, 25% YIELD, 25% KE 2.5%)         |[/bold cyan]"
+    title = "[bold cyan]|  HASIL SCANNING & RANKING PELUANG (BOBOT: 25% RATE, 25% BEP, 25% KE 2.5%)          |[/bold cyan]"
 
     ranking_lines = [
         "\n" + sep,
@@ -639,6 +640,19 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
 
                 # ⭐ KUNCI: Sinkronisasi modal pokok dari total ekuitas trading REAL Bitget
                 compounding_manager.sync_from_real_balance(total_trading_equity if total_trading_equity > 0 else total_bal)
+
+                # ⭐ MONTHLY TP: Evaluasi siklus 30-hari Take Profit 5% (Capital Floor Guard aktif)
+                try:
+                    _tp_baseline = compounding_manager.initial_seed if compounding_manager.initial_seed > 0 else 64.0
+                    _tp_total_balance = total_trading_equity if total_trading_equity > 0 else total_bal
+                    monthly_tp_manager.evaluate_and_execute(
+                        total_balance_usdt=_tp_total_balance,
+                        baseline_capital_usdt=_tp_baseline,
+                        db=db,
+                        vault=yield_vault
+                    )
+                except Exception as _tp_err:
+                    log.debug(f"[MonthlyTP] evaluate_and_execute notice: {_tp_err}")
 
                 display_compounding_pool(
                     total_liquid_usdt=total_bal,

@@ -101,20 +101,20 @@ class PerformanceScorer:
     ) -> float:
         """
         Menghitung Skor Performa Komposit Kuantitatif (Bobot 0 - 100):
+        - 25%: Funding Rate Tertinggi (Current / Predicted Rate — koin dengan rate paling besar menang)
         - 25%: Kecepatan BEP Tercepat (Break-even hours terpendek)
-        - 25%: Bunga Tertinggi (Current / Predicted weekly funding yield)
         - 25%: Waktu Tercepat Mencapai Target 2.5% Profit Bersih (Setelah BEP Lunas)
         - 15%: Kualitas Basis Spread Positif & Proteksi Modal (Cegah rugi di bawah modal awal)
         - 10%: Durasi Bebas Flip Historis (5%) & Likuiditas Pasar $10k+ (5%)
         """
-        cycles_per_day = 24.0 / max(1, funding_interval_hours)
-        weekly_yield_pct = (predicted_next_rate * cycles_per_day * 7.0) * 100.0
+        # 1. Bobot 25%: Funding Rate Tertinggi (predicted_next_rate sebagai proxy terbaik)
+        #    Rate 0.075% per siklus (0.0075) atau lebih = 25 poin penuh (perp market rate ceiling)
+        #    Normalisasi: rate / 0.0075 * 25 (cap di 25)
+        rate_for_scoring = max(0.0, predicted_next_rate)
+        score_funding_rate = min(25.0, (rate_for_scoring / 0.0075) * 25.0)
 
-        # 1. Bobot 25%: Kecepatan BEP Tercepat (BEP <= 8 jam = 25 poin penuh, 72 jam = 0 poin)
+        # 2. Bobot 25%: Kecepatan BEP Tercepat (BEP <= 8 jam = 25 poin penuh, 72 jam = 0 poin)
         score_bep = max(0.0, (72.0 - min(72.0, break_even_hours)) / 72.0) * 25.0
-
-        # 2. Bobot 25%: Bunga Tertinggi (Yield mingguan 2.5%+ = 25 poin penuh)
-        score_yield = max(0.0, min(25.0, (weekly_yield_pct / 2.5) * 25.0))
 
         # 3. Bobot 25%: Waktu Tercepat Mencapai Target 2.5% Profit Bersih (Setelah BEP Lunas)
         rate_per_hour_pct = (predicted_next_rate * 100.0) / max(1, funding_interval_hours)
@@ -132,7 +132,7 @@ class PerformanceScorer:
         score_flip = min(5.0, (flip_free_days / 365.0) * 5.0)
         score_liq = min(5.0, (volume_24h_usdt / 50000.0) * 5.0) if volume_24h_usdt >= 10000.0 else 0.0
 
-        composite_score = score_bep + score_yield + score_target_speed + score_spread + score_flip + score_liq
+        composite_score = score_funding_rate + score_bep + score_target_speed + score_spread + score_flip + score_liq
         return round(max(0.0, composite_score), 2)
 
 performance_scorer = PerformanceScorer()
