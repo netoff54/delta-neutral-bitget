@@ -72,6 +72,7 @@ class BotSettings(BaseSettings):
     MONTHLY_TP_PERCENT: float = Field(default=0.05, description="Persentase total saldo Bitget yang disisihkan ke brankas setiap 30 hari (default: 5%)")
     MONTHLY_TP_CYCLE_DAYS: int = Field(default=30, description="Durasi siklus evaluasi Take Profit dalam hari (default: 30 hari rolling)")
     MONTHLY_TP_MIN_SURPLUS_PERCENT: float = Field(default=0.01, description="Modal pokok wajib surplus minimal 1% di atas baseline setelah TP dieksekusi (mencegah modal balik ke titik awal)")
+    MONTHLY_TP_AUTO_REINVEST_DAYS: int = Field(default=7, description="Jika 5% TP tidak ditarik dalam N hari, otomatis dikembalikan ke modal compounding (default: 7 hari)")
 
     # Risk Controls (Maksimal ROE & MMR tidak boleh melewati 85%)
     MARGIN_CALL_THRESHOLD: float = Field(default=0.75, description="Ambang batas peringatan margin ratio / MMR Bitget (75%)")

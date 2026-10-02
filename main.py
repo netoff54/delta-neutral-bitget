@@ -638,19 +638,37 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
                 otc_eq = float(combined_bal.get("otc", {}).get("equity_usdt", 0.0) if settings.INCLUDE_OTC_BALANCE else 0.0)
                 total_trading_equity = spot_eq + futures_eq + otc_eq
 
-                # ⭐ KUNCI: Sinkronisasi modal pokok dari total ekuitas trading REAL Bitget
-                compounding_manager.sync_from_real_balance(total_trading_equity if total_trading_equity > 0 else total_bal)
+                # ⭐ KUNCI: Sinkronisasi modal dari saldo REAL Bitget
+                # Fix #1: Pass vault_locked agar deposit detection tidak false positive setelah TP
+                _vault_locked = getattr(yield_vault, "total_locked_usdt", 0.0)
+                compounding_manager.sync_from_real_balance(
+                    real_liquid_usdt=total_trading_equity if total_trading_equity > 0 else total_bal,
+                    vault_locked_usdt=_vault_locked
+                )
 
-                # ⭐ MONTHLY TP: Evaluasi siklus 30-hari Take Profit 5% (Capital Floor Guard aktif)
+                # ⭐ Fix #3: Auto-reinvest dormant TP (jika tidak ditarik dalam 7 hari → compound kembali)
+                try:
+                    monthly_tp_manager.check_and_auto_reinvest(
+                        vault=yield_vault,
+                        compounding_manager_ref=compounding_manager,
+                        db=db
+                    )
+                except Exception as _ar_err:
+                    log.debug(f"[AutoReinvest] Notice: {_ar_err}")
+
+                # ⭐ MONTHLY TP: Evaluasi siklus 30-hari Take Profit 5% (Capital Floor Guard)
                 try:
                     _tp_baseline = compounding_manager.initial_seed if compounding_manager.initial_seed > 0 else 64.0
                     _tp_total_balance = total_trading_equity if total_trading_equity > 0 else total_bal
-                    monthly_tp_manager.evaluate_and_execute(
+                    _tp_result = monthly_tp_manager.evaluate_and_execute(
                         total_balance_usdt=_tp_total_balance,
                         baseline_capital_usdt=_tp_baseline,
                         db=db,
                         vault=yield_vault
                     )
+                    # Fix #1: Jika TP berhasil dieksekusi, update accounting compounding
+                    if _tp_result.get("executed") and _tp_result.get("amount_usdt", 0) > 0:
+                        compounding_manager.deduct_vaulted_profit(_tp_result["amount_usdt"])
                 except Exception as _tp_err:
                     log.debug(f"[MonthlyTP] evaluate_and_execute notice: {_tp_err}")
 

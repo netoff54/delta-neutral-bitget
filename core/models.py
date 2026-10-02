@@ -175,12 +175,18 @@ class OrderExecutionResult(BaseModel):
     error_message: Optional[str] = None
 
 class YieldVaultRecord(BaseModel):
+    db_id: Optional[int] = None                                         # PostgreSQL row id
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     position_id: str
     base_asset: str
     amount_usdt: float
     funding_rate: float
     notes: str = "Harvested funding fee"
+    deposited_at: datetime = Field(default_factory=datetime.utcnow)     # Waktu dikunci ke vault
+    auto_reinvest_deadline: Optional[datetime] = None                   # Batas waktu sebelum auto-compound ulang (hanya MONTHLY_TP)
+    is_released: bool = False                                           # True jika sudah di-withdraw atau di-reinvest
+    released_at: Optional[datetime] = None
+    release_type: Optional[str] = None                                  # 'MANUAL_WITHDRAW' | 'AUTO_REINVEST'
 
 class YieldVaultSummary(BaseModel):
     total_harvested_usdt: float = 0.0

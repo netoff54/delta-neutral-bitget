@@ -339,6 +339,42 @@ class UnifiedDatabase:
                 )
             """)
 
+            # 10. Tabel Yield Vault Records (Persistensi brankas profit — Tahan Restart & Redeploy)
+            #     Menggantikan data/yield_vault.json yang hilang saat Render redeploy
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS yield_vault_records (
+                    id BIGINT DEFAULT 0,
+                    timestamp_utc TEXT NOT NULL,
+                    position_id TEXT NOT NULL,
+                    base_asset TEXT NOT NULL,
+                    amount_usdt REAL NOT NULL,
+                    funding_rate REAL NOT NULL,
+                    notes TEXT,
+                    deposited_at TEXT NOT NULL,
+                    auto_reinvest_deadline TEXT,
+                    is_released INTEGER DEFAULT 0,
+                    released_at TEXT,
+                    release_type TEXT
+                )
+            """ if not self.is_postgres else """
+                CREATE TABLE IF NOT EXISTS yield_vault_records (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp_utc TEXT NOT NULL,
+                    position_id TEXT NOT NULL,
+                    base_asset TEXT NOT NULL,
+                    amount_usdt REAL NOT NULL,
+                    funding_rate REAL NOT NULL,
+                    notes TEXT,
+                    deposited_at TEXT NOT NULL,
+                    auto_reinvest_deadline TEXT,
+                    is_released INTEGER DEFAULT 0,
+                    released_at TEXT,
+                    release_type TEXT
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_vault_released ON yield_vault_records(is_released)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_vault_base ON yield_vault_records(base_asset)")
+
             # Safe Schema Migrations (PostgreSQL & SQLite) agar kompatibel dengan database yang sudah ada
             if self.is_postgres:
                 migration_sqls = [
@@ -1161,5 +1197,129 @@ class UnifiedDatabase:
                 "skip_reason": skip_reason
             }
         )
+
+    # =========================================================================
+    # PILAR 11: YIELD VAULT RECORDS (BRANKAS PROFIT — TAHAN RESTART & REDEPLOY)
+    # Menggantikan data/yield_vault.json yang hilang setiap Render redeploy
+    # =========================================================================
+    def record_vault_deposit(
+        self,
+        position_id: str,
+        base_asset: str,
+        amount_usdt: float,
+        funding_rate: float,
+        notes: str,
+        deposited_at: str,
+        auto_reinvest_deadline: Optional[str] = None
+    ) -> Optional[int]:
+        """Simpan record deposit vault ke database. Returns row id."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        sql = """
+            INSERT INTO yield_vault_records (
+                timestamp_utc, position_id, base_asset, amount_usdt, funding_rate,
+                notes, deposited_at, auto_reinvest_deadline, is_released
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(self._format_query(sql), (
+                    now_iso, position_id, base_asset, float(amount_usdt),
+                    float(funding_rate), notes, deposited_at, auto_reinvest_deadline
+                ))
+                if self.is_postgres:
+                    cursor.execute("SELECT lastval()")
+                    row = cursor.fetchone()
+                    return int(row[0]) if row else None
+                return cursor.lastrowid
+        except Exception as e:
+            log.warning(f"[VaultDB] record_vault_deposit notice: {e}")
+            return None
+
+    def get_vault_records(self, only_active: bool = True) -> List[Dict[str, Any]]:
+        """Ambil semua record vault. only_active=True → hanya yang belum dirilis."""
+        if only_active:
+            sql = "SELECT * FROM yield_vault_records WHERE is_released = 0 ORDER BY deposited_at ASC"
+            params = ()
+        else:
+            sql = "SELECT * FROM yield_vault_records ORDER BY deposited_at DESC LIMIT ?"
+            params = (200,)
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(self._format_query(sql), params)
+                return [dict(r) for r in cursor.fetchall()]
+        except Exception as e:
+            log.debug(f"[VaultDB] get_vault_records notice: {e}")
+            return []
+
+    def get_vault_total_locked(self) -> float:
+        """Hitung total USDT yang terkunci di vault (belum dirilis)."""
+        sql = "SELECT COALESCE(SUM(amount_usdt), 0.0) as total FROM yield_vault_records WHERE is_released = 0"
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(self._format_query(sql))
+                row = cursor.fetchone()
+                if row:
+                    val = row["total"] if isinstance(row, dict) else row[0]
+                    return float(val or 0.0)
+        except Exception as e:
+            log.debug(f"[VaultDB] get_vault_total_locked notice: {e}")
+        return 0.0
+
+    def get_dormant_vault_records(self) -> List[Dict[str, Any]]:
+        """
+        Ambil record vault MONTHLY_TP yang auto_reinvest_deadline-nya sudah lewat
+        dan belum dirilis → kandidat untuk auto-reinvest ke modal compounding.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        sql = """
+            SELECT * FROM yield_vault_records
+            WHERE is_released = 0
+              AND base_asset = 'MONTHLY_TP'
+              AND auto_reinvest_deadline IS NOT NULL
+              AND auto_reinvest_deadline <= ?
+            ORDER BY deposited_at ASC
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(self._format_query(sql), (now_iso,))
+                return [dict(r) for r in cursor.fetchall()]
+        except Exception as e:
+            log.debug(f"[VaultDB] get_dormant_vault_records notice: {e}")
+        return []
+
+    def release_vault_record(self, record_id: int, release_type: str = "AUTO_REINVEST") -> float:
+        """
+        Tandai record vault sebagai dirilis (withdrawn atau auto-reinvest).
+        Returns: jumlah USDT yang dirilis (0.0 jika gagal).
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            # Ambil amount dulu
+            sql_get = "SELECT amount_usdt FROM yield_vault_records WHERE id = ? AND is_released = 0"
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(self._format_query(sql_get), (record_id,))
+                row = cursor.fetchone()
+                if not row:
+                    return 0.0
+                amount = float(row["amount_usdt"] if isinstance(row, dict) else row[0])
+
+            # Update ke released
+            sql_upd = """
+                UPDATE yield_vault_records
+                SET is_released = 1, released_at = ?, release_type = ?
+                WHERE id = ? AND is_released = 0
+            """
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(self._format_query(sql_upd), (now_iso, release_type, record_id))
+            return amount
+        except Exception as e:
+            log.warning(f"[VaultDB] release_vault_record notice: {e}")
+        return 0.0
 
 db = UnifiedDatabase()
