@@ -47,8 +47,32 @@ class CompoundingManager:
         self.load_state()
 
     def load_state(self):
-        """Muat riwayat compounding dari disk."""
+        """
+        Muat riwayat compounding dari Database (Ground-Truth Riil Bitget).
+        Prioritas utama: sinkronisasi 100% dari buku kas riil di database PostgreSQL.
+        Fallback ke disk json jika DB tidak tersedia.
+        """
         default_seed = float(getattr(settings, "INITIAL_SEED_CAPITAL_USDT", 64.0) or 64.0)
+        self.initial_seed = default_seed
+
+        # 1. Ground-Truth Utama: Database Riil Bitget
+        try:
+            from core.database import db
+            real_harvest = db.get_total_harvested_profit()
+            real_harvests = db.get_harvest_history(limit=500)
+            if real_harvest > 0 or real_harvests:
+                self.total_profit_compounded = round(real_harvest, 6)
+                self.current_capital = round(self.initial_seed + self.total_profit_compounded, 4)
+                log.info(
+                    f"[CompoundingManager] 💰 Ground-Truth Bitget DB: Modal Pokok: ${self.initial_seed:.2f} | "
+                    f"Profit Ter-Compound Riil: +${self.total_profit_compounded:.4f} USDT ({len(real_harvests)}x panen riil)"
+                )
+                self.save_state()
+                return
+        except Exception as dbe:
+            log.debug(f"[CompoundingManager] DB load notice: {dbe}")
+
+        # 2. Fallback disk jika DB belum siap
         if not self.state_path.exists():
             self.initial_seed = default_seed
             self.current_capital = default_seed
@@ -219,11 +243,19 @@ class CompoundingManager:
 
     def get_summary(self) -> CompoundingState:
         """Ringkasan data compounding."""
+        events_count = len(self.events)
+        try:
+            from core.database import db
+            db_harvests = db.get_harvest_history(limit=500)
+            if db_harvests:
+                events_count = max(events_count, len(db_harvests))
+        except Exception:
+            pass
         return CompoundingState(
             initial_seed_capital=self.initial_seed,
             total_profit_compounded=self.total_profit_compounded,
             current_compounded_capital=self.current_capital,
-            harvest_events_count=len(self.events),
+            harvest_events_count=events_count,
             last_updated=datetime.utcnow()
         )
 

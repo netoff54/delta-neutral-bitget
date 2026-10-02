@@ -1,8 +1,8 @@
 {
   "initial_seed_capital": 64.0,
-  "total_profit_compounded": 3.68,
-  "current_compounded_capital": 67.68,
+  "total_profit_compounded": 0.103813,
+  "current_compounded_capital": 64.1038,
   "harvest_events_count": 0,
-  "last_updated": "2026-10-02T12:30:46.714510",
+  "last_updated": "2026-10-02T13:08:03.820500",
   "events": []
 }
