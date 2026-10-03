@@ -4,3 +4,13 @@ services:
     runtime: docker
     plan: free
     region: singapore
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PYTHONDONTWRITEBYTECODE
+        value: "1"
+      - key: CONSOLE_WIDTH
+        value: "92"

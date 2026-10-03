@@ -23,24 +23,34 @@ def print_clean_table(lines: list):
     for line in lines:
         console.print(line)
 
+def log_separator(label: str = ""):
+    """Mencetak garis pemisah siklus scan agar log Render mudah dibaca dan tidak bercampur antar iterasi."""
+    sep = "=" * 70
+    if label:
+        console.print(f"\n[dim]{sep}[/dim]")
+        console.print(f"[bold cyan]  {label}[/bold cyan]")
+        console.print(f"[dim]{sep}[/dim]\n")
+    else:
+        console.print(f"\n[dim]{sep}[/dim]\n")
+
 def setup_logger(name: str = "delta_neutral", log_file: str = "bot.log") -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
     
     if not logger.handlers:
-        # Rich Console Handler - Bersih tanpa prefix ganda di cloud logs
+        # Rich Console Handler — format ringkas untuk Render (timestamp sudah ada dari Render platform)
         rich_handler = RichHandler(
             console=console,
-            show_time=not is_cloud,  # Cloud Render/Railway sudah memiliki timestamp otomatis
+            show_time=not is_cloud,   # Di cloud Render/Railway timestamp sudah ditambahkan otomatis
             show_path=False,
             rich_tracebacks=True,
-            markup=False,  # Jangan interpretasikan tanda kurung siku [...] sebagai markup agar teks tidak hilang
+            markup=False,             # Jangan interpret [...] sebagai markup agar teks tidak hilang di log cloud
             omit_repeated_times=False,
             keywords=[]
         )
         rich_handler.setLevel(logging.INFO)
         
-        # File Handler
+        # File Handler — simpan semua log lengkap ke bot.log dengan format timestamp penuh
         log_path = Path(log_file)
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)

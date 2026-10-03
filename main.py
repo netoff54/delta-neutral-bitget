@@ -20,7 +20,7 @@ from rich.text import Text
 from rich import box
 
 from config.settings import settings
-from utils.logger import log, console, print_clean_table
+from utils.logger import log, console, print_clean_table, log_separator
 from utils.dns_resolver import patch_dns
 from core.bitget_client import bitget_client
 from scanner.opportunity_finder import opportunity_finder
@@ -600,6 +600,8 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
     try:
         while True:
             try:
+                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S WIB')
+                log_separator(f"SIKLUS SCAN BARU — {now_str}")
                 if sys.stdout.isatty() and not os.getenv("RAILWAY_ENVIRONMENT") and not os.getenv("RENDER"):
                     console.clear()
                 print_banner(settings.DRY_RUN)
@@ -656,7 +658,7 @@ async def run_autonomous_loop(auto_trade: bool, manual_capital: float = None):
                 except Exception as _ar_err:
                     log.debug(f"[AutoReinvest] Notice: {_ar_err}")
 
-                # ⭐ MONTHLY TP: Evaluasi siklus 30-hari Take Profit 5% (Capital Floor Guard)
+                # ⭐ MONTHLY TP: Evaluasi siklus 30-hari Take Profit 10% (Capital Floor Guard 1.5%)
                 try:
                     _tp_baseline = compounding_manager.initial_seed if compounding_manager.initial_seed > 0 else 64.0
                     _tp_total_balance = total_trading_equity if total_trading_equity > 0 else total_bal

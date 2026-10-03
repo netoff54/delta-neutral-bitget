@@ -188,16 +188,16 @@ class AutoRebalancer:
                 if position_bep_capital <= 0.0 and capital_per_position:
                     position_bep_capital = capital_per_position
 
-                # Target surplus 5% (sebelum 1 bulan) dan WAJIB minimal 1% (setelah 1 bulan) dari nilai BEP portofolio
-                surplus_5pct_target = getattr(settings, "MIN_PROFIT_SURPLUS_PERCENT", 0.05)
-                surplus_1pct_target = getattr(settings, "MIN_PROFIT_SURPLUS_AFTER_DEADLINE_PERCENT", 0.01)
+                # Syarat surplus: 0.5% sebelum deadline, 0.1% setelah deadline (dari settings.py terpusat)
+                surplus_target = getattr(settings, "MIN_PROFIT_SURPLUS_PERCENT", 0.005)
+                surplus_after_deadline = getattr(settings, "MIN_PROFIT_SURPLUS_AFTER_DEADLINE_PERCENT", 0.001)
 
-                min_profit_5pct = round(position_bep_capital * surplus_5pct_target, 4)
-                min_profit_1pct = round(position_bep_capital * surplus_1pct_target, 4)
+                min_profit_target = round(position_bep_capital * surplus_target, 4)
+                min_profit_after_deadline = round(position_bep_capital * surplus_after_deadline, 4)
                 profit_pct_now = (pos.net_pnl_usdt / position_bep_capital * 100.0) if position_bep_capital > 0 else 0.0
 
-                # Tenggat waktu 1 bulan (30 hari / 720 jam)
-                deadline_days = getattr(settings, "MAX_HOLDING_DEADLINE_DAYS", 30.0)
+                # Tenggat waktu 1 minggu (7 hari / 168 jam)
+                deadline_days = getattr(settings, "MAX_HOLDING_DEADLINE_DAYS", 7.0)
                 deadline_hours = deadline_days * 24.0
                 is_deadline_passed = holding_hours >= deadline_hours
                 days_held = holding_hours / 24.0
@@ -239,22 +239,23 @@ class AutoRebalancer:
                     continue
 
                 # Syarat 4: SURPLUS PROFIT BERSIH DI ATAS BEP
-                # Untuk kelincahan target 2.5% mingguan, cukup surplus 0.3% modal di atas BEP
-                target_surplus_pct = surplus_1pct_target if is_deadline_passed else surplus_5pct_target
+                # Bot DILARANG rotasi hanya karena BEP=0 — wajib ada profit nyata di atas seluruh biaya fee
+                target_surplus_pct = surplus_after_deadline if is_deadline_passed else surplus_target
                 min_required_profit = round(position_bep_capital * target_surplus_pct, 4)
 
                 if pos.net_pnl_usdt < min_required_profit:
                     log.info(
-                        f"⏳ [Rotasi Ditunda] {pos.base_asset}: Sudah BEP tetapi belum mencapai surplus profit "
-                        f"(Saat ini: +${pos.net_pnl_usdt:.4f} USDT / Target: +${min_required_profit:.4f} USDT [{target_surplus_pct*100:.2f}%]). "
-                        f"Tahan posisi agar keuntungan bersih terkumpul sebelum berpindah koin."
+                        f"[Rotasi Ditunda] {pos.base_asset}: Sudah BEP namun surplus profit belum cukup "
+                        f"(Sekarang: +${pos.net_pnl_usdt:.4f} USDT / Target: +${min_required_profit:.4f} USDT "
+                        f"[{target_surplus_pct*100:.2f}% dari modal ${position_bep_capital:.2f}]). "
+                        f"Tahan — biarkan bunga terus menumpuk agar modal benar-benar bertumbuh."
                     )
                     continue
                 else:
                     log.info(
-                        f"🎯 [Target Surplus Terpenuhi] {pos.base_asset}: Berhasil mengantongi profit bersih "
-                        f"+${pos.net_pnl_usdt:.4f} USDT ({profit_pct_now:+.2f}% di atas seluruh fee transaksi). "
-                        f"Koin aktif melambat ({curr_rate*100:.4f}%), siap dievaluasi untuk rotasi!"
+                        f"[Target Surplus Terpenuhi] {pos.base_asset}: Profit bersih +${pos.net_pnl_usdt:.4f} USDT "
+                        f"({profit_pct_now:+.2f}% di atas seluruh fee). "
+                        f"Funding rate melambat ({curr_rate*100:.4f}%/{pos.funding_interval_hours}h) — siap evaluasi rotasi."
                     )
 
                 # Syarat 5: Cek konsistensi koin baru harus stabil (> 75%)

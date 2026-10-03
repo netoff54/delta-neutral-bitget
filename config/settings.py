@@ -41,10 +41,10 @@ class BotSettings(BaseSettings):
     PERP_MAKER_FEE: float = Field(default=0.0002, description="Perp maker fee rate (0.02%)")
     SLIPPAGE_BUFFER: float = Field(default=0.0005, description="Anticipated slippage buffer (0.05%)")
 
-    # Strategy & Predictive Scoring - Target 2.5% Bersih per Minggu
-    TARGET_WEEKLY_NET_YIELD_PERCENT: float = Field(default=2.5, description="Target keuntungan bersih mingguan (2.5% net per minggu)")
+    # Strategy & Predictive Scoring - Target 2.5% Bersih per Minggu (akumulasi ~10% per bulan)
+    TARGET_WEEKLY_NET_YIELD_PERCENT: float = Field(default=2.5, description="Target keuntungan bersih mingguan (2.5% net per minggu = ~10% per bulan)")
     HISTORICAL_ANALYSIS_DAYS: int = Field(default=365, description="Horizon analisis riwayat funding rate (1 tahun / 365 hari, atau sejak awal koin jika koin baru)")
-    MIN_NET_APY_PERCENT: float = Field(default=35.0, description="Minimum acceptable net APY (35% APY agar koin prospektif tidak terbuang)")
+    MIN_NET_APY_PERCENT: float = Field(default=75.0, description="Minimum acceptable net APY (75% APY = ~6.25% per bulan, filter koin high-yield untuk target 10%/bulan)")
     MAX_BREAK_EVEN_HOURS: float = Field(default=72.0, description="Maximum hours allowed to break even")
     MIN_CONSECUTIVE_POSITIVE_FUNDING: int = Field(default=2, description="Consecutive positive funding cycles required")
     PREDICTIVE_HORIZON_CYCLES: int = Field(default=10, description="Jumlah siklus historis untuk evaluasi performa")
@@ -52,11 +52,11 @@ class BotSettings(BaseSettings):
     # Opportunity Rotation & Rebalancing
     AUTO_REBALANCE_DELTA: bool = Field(default=True, description="Otomatis rebalance delta jika ada mismatch")
     AUTO_ROTATE_OPPORTUNITIES: bool = Field(default=True, description="Otomatis rotasi modal ke pasangan baru dengan performa lebih tinggi")
-    MIN_ROTATION_APY_DIFF: float = Field(default=12.0, description="Minimal selisih Net APY (%) untuk memicu rotasi modal")
+    MIN_ROTATION_APY_DIFF: float = Field(default=20.0, description="Minimal selisih Net APY (%) untuk memicu rotasi modal — dinaikkan ke 20% agar tidak rotasi ke koin yang hanya sedikit lebih baik")
     MIN_HOLDING_HOURS_BEFORE_ROTATION: float = Field(default=4.0, description="Minimal jam holding sebelum boleh dirotasi (1 siklus 4h)")
-    # Target profit surplus 0.3% di atas BEP modal posisi untuk kelincahan rotasi mingguan
-    MIN_PROFIT_SURPLUS_PERCENT: float = Field(default=0.003, description="Target profit surplus minimal di atas BEP (0.3% dari nilai modal) untuk memicu rotasi")
-    MIN_PROFIT_SURPLUS_AFTER_DEADLINE_PERCENT: float = Field(default=0.001, description="Wajib surplus minimal di atas BEP (0.1% dari nilai modal) setelah 1 minggu")
+    # Target profit surplus 0.5% di atas BEP modal posisi sebelum diizinkan rotasi — naik dari 0.3% agar modal benar-benar tumbuh
+    MIN_PROFIT_SURPLUS_PERCENT: float = Field(default=0.005, description="Target profit surplus minimal di atas BEP (0.5% dari nilai modal) sebelum rotasi diizinkan")
+    MIN_PROFIT_SURPLUS_AFTER_DEADLINE_PERCENT: float = Field(default=0.001, description="Wajib surplus minimal di atas BEP (0.1% dari nilai modal) setelah 1 minggu deadline")
     MAX_HOLDING_DEADLINE_DAYS: float = Field(default=7.0, description="Tenggat waktu evaluasi holding mingguan (7 hari)")
     MIN_PROFIT_BEFORE_ROTATION_USDT: float = Field(default=0.1, description="[FALLBACK] Minimal profit nominal dalam USDT")
 
@@ -67,19 +67,18 @@ class BotSettings(BaseSettings):
     # Yield Vault (Profit Protection - Jangan Sentuh Uang Hasil Earn)
     VAULT_LOCK_PROFITS: bool = Field(default=True, description="Kunci seluruh profit hasil earn agar tidak dipakai trading")
 
-    # Monthly Take Profit Reserve (5% dari total saldo Bitget setiap 30 hari)
+    # Monthly Take Profit Reserve (10% dari total saldo Bitget setiap 30 hari — target 10% per bulan)
     MONTHLY_TP_ENABLED: bool = Field(default=True, description="Aktifkan fitur penyisihan Take Profit otomatis setiap 30 hari rolling")
-    MONTHLY_TP_PERCENT: float = Field(default=0.05, description="Persentase total saldo Bitget yang disisihkan ke brankas setiap 30 hari (default: 5%)")
+    MONTHLY_TP_PERCENT: float = Field(default=0.10, description="Persentase total saldo Bitget yang disisihkan ke brankas setiap 30 hari (10% = target Take Profit bulanan)")
     MONTHLY_TP_CYCLE_DAYS: int = Field(default=30, description="Durasi siklus evaluasi Take Profit dalam hari (default: 30 hari rolling)")
-    MONTHLY_TP_MIN_SURPLUS_PERCENT: float = Field(default=0.01, description="Modal pokok wajib surplus minimal 1% di atas baseline setelah TP dieksekusi (mencegah modal balik ke titik awal)")
-    MONTHLY_TP_AUTO_REINVEST_DAYS: int = Field(default=7, description="Jika 5% TP tidak ditarik dalam N hari, otomatis dikembalikan ke modal compounding (default: 7 hari)")
+    MONTHLY_TP_MIN_SURPLUS_PERCENT: float = Field(default=0.015, description="Modal pokok wajib surplus minimal 1.5% di atas baseline setelah TP dieksekusi — naik dari 1% agar modal tidak tergerus ke titik awal")
+    MONTHLY_TP_AUTO_REINVEST_DAYS: int = Field(default=3, description="Jika 10% TP tidak ditarik dalam N hari, otomatis dikembalikan ke modal compounding (3 hari = kompounding lebih cepat)")
 
     # Risk Controls (Maksimal ROE & MMR tidak boleh melewati 85%)
     MARGIN_CALL_THRESHOLD: float = Field(default=0.75, description="Ambang batas peringatan margin ratio / MMR Bitget (75%)")
     AUTO_CLOSE_MARGIN_RATIO: float = Field(default=0.85, description="Ambang batas margin ratio / MMR Bitget untuk auto-close darurat (85%)")
     FUTURES_MAX_LOSS_PERCENT: float = Field(default=0.85, description="Batas maksimal kerugian unrealized futures (-85% margin) untuk batalkan delta neutral")
     FUTURES_MAX_ROE_LOSS_PERCENT: float = Field(default=85.0, description="Batas maksimal kerugian ROE Futures Bitget (-85%) untuk membatalkan delta neutral")
-    REQUIRE_POSITIVE_SPREAD: bool = Field(default=True, description="Pastikan basis spread tetap positif (Perp >= Spot di semua jenis transaksi)")
     EMERGENCY_EXIT_FUNDING_RATE: float = Field(default=0.0, description="Zero tolerance untuk funding rate negatif (< 0.0% langsung exit)")
     EXIT_NEGATIVE_CYCLES_COUNT: int = Field(default=1, description="Negative funding cycle count to trigger exit")
 
