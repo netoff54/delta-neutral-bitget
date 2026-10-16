@@ -29,7 +29,7 @@ class BotSettings(BaseSettings):
     SIMULATED_OTC_BALANCE_USDT: float = Field(default=0.0, description="[TEST ONLY] Saldo OTC simulasi - TIDAK digunakan saat live")
     MAX_CAPITAL_PER_POSITION_USDT: Optional[float] = Field(default=None, description="Manual override alokasi per posisi (None = alokasi dinamis seluruh modal cair)")
     # Baseline Modal Awal: Ditetapkan $64.0 USDT (sesuai setoran user), akan otomatis menyesuaikan jika user menambah saldo
-    INITIAL_SEED_CAPITAL_USDT: float = Field(default=64.0, description="Baseline modal awal pokok ($64.0 USDT default, auto-adjust saat ada deposit baru)")
+    INITIAL_SEED_CAPITAL_USDT: float = Field(default=64.16, description="Baseline modal awal pokok ($64.0 USDT default, auto-adjust saat ada deposit baru)")
     TOTAL_MAX_CAPITAL_USDT: Optional[float] = Field(default=None, description="Batas atas total modal (opsional)")
     LEVERAGE: int = Field(default=1, ge=1, le=1, description="Futures short leverage terkunci mutlak 1x")
     MIN_24H_VOLUME_USDT: float = Field(default=10000.0, description="Minimum 24h volume for liquidity check ($10k)")
